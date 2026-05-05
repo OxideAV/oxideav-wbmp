@@ -1,0 +1,31 @@
+[package]
+name = "oxideav-wbmp"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/OxideAV/oxideav-wbmp"
+homepage = "https://github.com/OxideAV/oxideav-wbmp"
+authors = ["Mark Karpeles"]
+description = "Pure-Rust WBMP (WAP Bitmap, monochrome) image codec — clean-room from the WAP Forum WAP-237 specification"
+readme = "README.md"
+keywords = ["multimedia", "image", "wbmp", "wap", "pure-rust"]
+categories = ["multimedia::encoding", "multimedia::images"]
+
+[dependencies]
+# `oxideav-core` is gated behind the default-on `registry` feature so
+# image-library consumers can depend on `oxideav-wbmp` with
+# `default-features = false` and avoid the framework dependency tree
+# entirely. Without `registry` the crate exposes the standalone
+# `parse_wbmp` / `encode_wbmp` API plus crate-local `WbmpImage` /
+# `WbmpError` types and never references `oxideav-core`.
+oxideav-core = { version = "0.1", optional = true }
+
+[features]
+default = ["registry"]
+
+# Wires up the codec / encoder / decoder / container demuxer + muxer
+# trait implementations against `oxideav-core` so the crate can plug
+# into the `oxideav` framework registry. Default-on; turn off for
+# image-library use-cases that just want the standalone `parse_wbmp` API.
+registry = ["dep:oxideav-core"]
