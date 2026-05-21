@@ -66,6 +66,29 @@ let mut containers = oxideav_core::ContainerRegistry::new();
 oxideav_wbmp::register(&mut codecs, &mut containers);
 ```
 
+## Resource limits
+
+`parse_wbmp` enforces a default [`WbmpLimits`] (max width 16 384, max
+height 16 384, max packed pixel-data 8 MiB) so an attacker-crafted
+header carrying `u32::MAX × u32::MAX` dimensions can't make the decoder
+allocate hundreds of gigabytes. Headers exceeding any limit return
+`WbmpError::LimitExceeded` (mapped to
+`oxideav_core::Error::ResourceExhausted` under `registry`) *before*
+the decoder touches its allocator.
+
+Callers that need to admit larger images:
+
+```rust
+use oxideav_wbmp::{parse_wbmp_with_limits, WbmpLimits};
+let img = parse_wbmp_with_limits(&buf, &WbmpLimits::unbounded())?;
+```
+
+The MBI decoder is similarly bounded: `MAX_MBI_BYTES = 7` caps the
+length of any single MBI sequence (5 bytes for the minimal `u32`
+encoding + a 2-byte allowance for leading `0x80` padding the spec
+text doesn't outlaw). Pathological continuation-byte runs error in
+O(1) rather than chasing the input.
+
 ## Round 1 deferrals
 
 * WBMP Type values other than `0`. Later WAP releases reserved Type 1+

@@ -12,7 +12,8 @@
 //! integration tests under `tests/` skipping isn't a concern.
 
 use oxideav_wbmp::{
-    encode_wbmp, encode_wbmp_from_threshold, parse_wbmp, WbmpImage, WbmpPixelFormat,
+    encode_wbmp, encode_wbmp_from_threshold, parse_wbmp, parse_wbmp_with_limits, WbmpImage,
+    WbmpLimits, WbmpPixelFormat,
 };
 
 fn assert_roundtrip(width: u32, height: u32, bits: &[u8]) {
@@ -100,10 +101,17 @@ fn roundtrip_dimensions_force_two_byte_mbi() {
 fn roundtrip_dimensions_force_three_byte_mbi() {
     // 16385 × 1 → width MBI is 3 bytes (16385 = 0x4001 > 0x3FFF).
     // Body is 2049 bytes — keep the row simple so the test stays fast.
+    //
+    // 16385 sits one above the default `max_width` (16384) so this
+    // also doubles as an opt-in to `WbmpLimits::unbounded` test —
+    // demonstrating that the limit is configurable rather than hard-
+    // coded.
     let stride = WbmpImage::row_stride(16385);
     let bits = vec![0u8; stride];
     let encoded = encode_wbmp(16385, 1, &bits).unwrap();
-    let decoded = parse_wbmp(&encoded).unwrap();
+    // Default limits reject; unbounded accepts.
+    assert!(parse_wbmp(&encoded).is_err());
+    let decoded = parse_wbmp_with_limits(&encoded, &WbmpLimits::unbounded()).unwrap();
     assert_eq!(decoded.width, 16385);
     assert_eq!(decoded.height, 1);
     assert_eq!(decoded.planes[0].data.len(), stride);

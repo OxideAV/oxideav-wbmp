@@ -30,6 +30,11 @@ pub enum WbmpError {
     /// in practice, any non-zero Type field. WAP-237 only standardises
     /// Type 0; no other type is widely deployed.
     Unsupported(String),
+    /// The byte stream declares dimensions or a pixel-data size that
+    /// exceeds the caller-configured [`crate::WbmpLimits`]. Raised
+    /// before the decoder allocates the pixel buffer so the host stays
+    /// safe even against a malicious 1 GB-bitmap header.
+    LimitExceeded(String),
 }
 
 impl WbmpError {
@@ -42,6 +47,11 @@ impl WbmpError {
     pub fn unsupported(msg: impl Into<String>) -> Self {
         Self::Unsupported(msg.into())
     }
+
+    /// Construct a [`WbmpError::LimitExceeded`] from a stringy message.
+    pub fn limit_exceeded(msg: impl Into<String>) -> Self {
+        Self::LimitExceeded(msg.into())
+    }
 }
 
 impl fmt::Display for WbmpError {
@@ -49,6 +59,7 @@ impl fmt::Display for WbmpError {
         match self {
             Self::InvalidData(s) => write!(f, "invalid data: {s}"),
             Self::Unsupported(s) => write!(f, "unsupported: {s}"),
+            Self::LimitExceeded(s) => write!(f, "limit exceeded: {s}"),
         }
     }
 }

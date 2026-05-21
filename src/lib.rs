@@ -58,6 +58,7 @@ pub mod encoder;
 pub mod error;
 pub mod header;
 pub mod image;
+pub mod limits;
 pub mod mbi;
 
 #[cfg(feature = "registry")]
@@ -68,12 +69,13 @@ pub mod registry;
 /// Codec id for WBMP image frames.
 pub const CODEC_ID_STR: &str = "wbmp";
 
-pub use decoder::parse_wbmp;
+pub use decoder::{parse_wbmp, parse_wbmp_with_limits};
 pub use encoder::{encode_wbmp, encode_wbmp_from_threshold};
 pub use error::{Result, WbmpError};
 pub use header::{parse_header, write_header, Header};
 pub use image::{WbmpImage, WbmpPixelFormat, WbmpPlane};
-pub use mbi::{mbi_u32_len, read_mbi_u32, write_mbi_u32, MAX_U32_MBI_BYTES};
+pub use limits::WbmpLimits;
+pub use mbi::{mbi_u32_len, read_mbi_u32, write_mbi_u32, MAX_MBI_BYTES, MAX_U32_MBI_BYTES};
 
 #[cfg(feature = "registry")]
 pub use registry::{register, register_codecs, register_containers};

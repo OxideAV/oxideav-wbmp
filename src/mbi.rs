@@ -31,10 +31,17 @@
 
 use crate::error::{Result, WbmpError};
 
-/// Maximum number of bytes a 32-bit MBI can occupy. A `u32` carries 32
-/// payload bits; at 7 payload bits per MBI byte the worst case is
-/// `ceil(32 / 7) = 5` bytes.
+/// Maximum number of bytes a 32-bit MBI can occupy when minimally
+/// encoded. A `u32` carries 32 payload bits; at 7 payload bits per
+/// MBI byte the worst case is `ceil(32 / 7) = 5` bytes.
 pub const MAX_U32_MBI_BYTES: usize = 5;
+
+/// Hard ceiling on the number of bytes the MBI decoder will read for
+/// a single value. `MAX_U32_MBI_BYTES` (5) plus a 2-byte allowance for
+/// the redundant leading-0x80 padding some reference encoders produce.
+/// Beyond this we error rather than chase a pathologically padded /
+/// adversarial run of continuation bytes.
+pub const MAX_MBI_BYTES: usize = MAX_U32_MBI_BYTES + 2;
 
 /// Decode a single MBI starting at `bytes[*offset]`. On success the
 /// offset is advanced past the consumed bytes and the decoded value is
@@ -66,14 +73,15 @@ pub fn read_mbi_u32(bytes: &[u8], offset: &mut usize) -> Result<u32> {
             )));
         }
 
-        // Cap MBI length at MAX_U32_MBI_BYTES even when the running
+        // Cap MBI length at a hard ceiling even when the running
         // value still fits. Anything longer is either pathologically
-        // padded or just plain malformed; rejecting here keeps decode
-        // bounded.
-        if bytes_read > MAX_U32_MBI_BYTES + 4 {
+        // padded or just plain malformed; bounding here keeps decode
+        // O(1) in the face of a `[0x80; 1_000_000]`-style attack and
+        // still leaves room for a couple of legitimate leading-0x80
+        // padding bytes seen in some reference test vectors.
+        if bytes_read > MAX_MBI_BYTES {
             return Err(WbmpError::invalid(format!(
-                "MBI starting at byte {start}: more than {} bytes",
-                MAX_U32_MBI_BYTES + 4
+                "MBI starting at byte {start}: more than {MAX_MBI_BYTES} bytes"
             )));
         }
 
@@ -209,6 +217,31 @@ mod tests {
         let mut offset = 0;
         let err = read_mbi_u32(&bytes, &mut offset).unwrap_err();
         assert!(matches!(err, WbmpError::InvalidData(_)));
+    }
+
+    #[test]
+    fn long_continuation_run_caps_at_max_mbi_bytes() {
+        // 32 continuation bytes followed by a terminator — well past
+        // MAX_MBI_BYTES. Reader must error before exhausting the run.
+        let mut bytes = vec![0x80u8; 32];
+        bytes.push(0x01);
+        let mut offset = 0;
+        let err = read_mbi_u32(&bytes, &mut offset).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)));
+        // It bailed shortly past MAX_MBI_BYTES (the check fires after
+        // incrementing the byte counter, so offset == MAX_MBI_BYTES+1).
+        assert!(offset <= MAX_MBI_BYTES + 1);
+    }
+
+    #[test]
+    fn two_byte_padding_at_cap_is_accepted() {
+        // MAX_MBI_BYTES = 7, so two leading 0x80 padding bytes plus a
+        // 5-byte u32 should still parse.
+        let bytes = [0x80u8, 0x80, 0x8F, 0xFF, 0xFF, 0xFF, 0x7F];
+        let mut offset = 0;
+        let v = read_mbi_u32(&bytes, &mut offset).unwrap();
+        assert_eq!(v, u32::MAX);
+        assert_eq!(offset, MAX_MBI_BYTES);
     }
 
     #[test]

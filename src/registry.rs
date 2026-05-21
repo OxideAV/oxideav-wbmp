@@ -28,6 +28,7 @@ impl From<WbmpError> for oxideav_core::Error {
         match e {
             WbmpError::InvalidData(s) => oxideav_core::Error::InvalidData(s),
             WbmpError::Unsupported(s) => oxideav_core::Error::Unsupported(s),
+            WbmpError::LimitExceeded(s) => oxideav_core::Error::ResourceExhausted(s),
         }
     }
 }
