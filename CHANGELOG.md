@@ -28,6 +28,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Round-2 hardening: explicit adversarial-input test sweep — 65 536
   two-byte prefixes plus 4 096 LCG-seeded random buffers driven through
   `parse_wbmp` and shown to never panic.
+- Round-3 hardening: `cargo-fuzz` harness (`fuzz/`) with two libFuzzer
+  targets — `decode` (panic-free `parse_wbmp` over arbitrary bytes) and
+  `roundtrip` (encode → decode bit-exactness over fuzz-controlled
+  dimensions + packed bits). Both build `default-features = false`
+  (no `oxideav-core` link). Initial sweep (~45 M + ~8 M executions)
+  found no crashes; RSS stayed bounded, confirming the `checked_mul`,
+  `MAX_MBI_BYTES`, and `WbmpLimits` allocation guards hold.
 
 ### Changed
 - `parse_wbmp` now enforces `WbmpLimits::default()`. Inputs declaring

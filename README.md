@@ -89,6 +89,33 @@ encoding + a 2-byte allowance for leading `0x80` padding the spec
 text doesn't outlaw). Pathological continuation-byte runs error in
 O(1) rather than chasing the input.
 
+## Fuzzing
+
+A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
+in [`fuzz/`](fuzz/) with two libFuzzer targets:
+
+* `decode` — feeds arbitrary bytes to `parse_wbmp`; the decoder must
+  return a `Result` and never panic / abort / OOM. The classic overflow
+  spots are the multi-byte width/height MBI parse and the
+  `stride * height` pixel-buffer allocation; both are guarded
+  (`checked_mul`, the `MAX_MBI_BYTES` ceiling, the default `WbmpLimits`)
+  and this target keeps them honest.
+* `roundtrip` — synthesises a valid Type-0 file from fuzz-controlled
+  small dimensions + packed bits, decodes it, and asserts dimensions and
+  plane bytes survive the round trip bit-for-bit.
+
+Both build with `default-features = false`, so the harness exercises the
+framework-free standalone path and never links `oxideav-core`. Run:
+
+```sh
+cargo +nightly fuzz run decode
+cargo +nightly fuzz run roundtrip
+```
+
+The initial sweep (~45 M `decode` + ~8 M `roundtrip` executions) found
+no crashes; RSS stayed under ~530 MiB throughout, confirming the
+allocation guards hold against adversarial headers.
+
 ## Round 1 deferrals
 
 * WBMP Type values other than `0`. Later WAP releases reserved Type 1+

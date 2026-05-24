@@ -1,0 +1,56 @@
+[package]
+name = "oxideav-wbmp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# WBMP Type 0 is a trivially-simple 1-bit format: a Multi-Byte-Integer
+# Type field, a 1-byte FixedHeader, two more MBIs (width, height) and a
+# bit-packed pixel matrix `ceil(width / 8) * height` bytes long. The
+# decoder is the only thing worth fuzzing — there is no standard system
+# library worth pulling in as a cross-decode oracle and the clean-room
+# wall bars any external WBMP source anyway, so these targets are
+# **oxideav-only**:
+#
+#  * `decode`    — feed arbitrary bytes to `parse_wbmp` and assert it
+#                  always returns a `Result` rather than panicking /
+#                  aborting / OOMing. The classic overflow spots are the
+#                  multi-byte width/height parse and the `stride * height`
+#                  pixel-buffer allocation; both are guarded in the
+#                  decoder and this target keeps them honest.
+#  * `roundtrip` — synthesise a valid Type-0 file from fuzz-controlled
+#                  dimensions + packed bits, decode it, and assert the
+#                  dimensions and plane bytes survive the round trip.
+#
+# The crate is pulled in with `default-features = false` so the fuzz
+# build exercises the framework-free standalone `parse_wbmp` /
+# `encode_wbmp` path and never links `oxideav-core`.
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.oxideav-wbmp]
+path = ".."
+default-features = false
+
+# Prevent this from interfering with the umbrella workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
