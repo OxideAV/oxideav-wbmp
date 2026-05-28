@@ -29,3 +29,27 @@ default = ["registry"]
 # into the `oxideav` framework registry. Default-on; turn off for
 # image-library use-cases that just want the standalone `parse_wbmp` API.
 registry = ["dep:oxideav-core"]
+
+[dev-dependencies]
+# Round 173 (depth-mode benchmarks): Criterion drives the three bench
+# harnesses (`decode`, `encode`, `roundtrip`) that future WBMP encoder
+# / decoder rounds can use to A/B their changes. Same 0.5 line the
+# rest of the workspace's bench-equipped crates (bmp / qoi / tta /
+# flac) already track.
+criterion = "0.5"
+
+# Round 173 benches. Each binary lives in `benches/<name>.rs` and is
+# self-contained (no committed fixture files — the benches build WBMPs
+# on the fly with the public encoder API). Run with:
+#     cargo bench -p oxideav-wbmp --bench <name>
+[[bench]]
+name = "decode"
+harness = false
+
+[[bench]]
+name = "encode"
+harness = false
+
+[[bench]]
+name = "roundtrip"
+harness = false

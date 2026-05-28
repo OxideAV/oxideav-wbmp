@@ -35,6 +35,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (no `oxideav-core` link). Initial sweep (~45 M + ~8 M executions)
   found no crashes; RSS stayed bounded, confirming the `checked_mul`,
   `MAX_MBI_BYTES`, and `WbmpLimits` allocation guards hold.
+- Round-4 depth-mode: Criterion bench suite (`benches/`) covering the
+  three hot paths (`decode`, `encode`, `roundtrip`) at six
+  representative sizes (8×8 / 96×64 / 320×240 / 159×33 / 1024×1024 /
+  2048×2048) plus the `encode_wbmp_from_threshold` per-pixel-branch
+  path on a 320×240 Gray8 fixture. Fixtures are synthesised in-process
+  from a deterministic xorshift32 source — no fixture files on disk.
+  Numbers (Apple M1 Pro, release, single core): decode ~71 GiB/s on
+  the 2048×2048 fixture (copy-bound), encode ~60 GiB/s on 1024×1024,
+  end-to-end roundtrip ~22 GiB/s on 1024×1024.
 
 ### Changed
 - `parse_wbmp` now enforces `WbmpLimits::default()`. Inputs declaring

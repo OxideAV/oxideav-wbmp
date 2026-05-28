@@ -116,6 +116,33 @@ The initial sweep (~45 M `decode` + ~8 M `roundtrip` executions) found
 no crashes; RSS stayed under ~530 MiB throughout, confirming the
 allocation guards hold against adversarial headers.
 
+## Benchmarks
+
+A Criterion suite in [`benches/`](benches/) covers the three hot paths
+end-to-end (`decode`, `encode`, full encode-→-decode `roundtrip`) at
+six representative sizes: 8×8 (per-call overhead), 96×64 (WAP-era
+handset), 320×240 (QVGA, 2-byte width MBI), 159×33 (odd-width padding-
+bit boundary), 1024×1024 (mid-size wallpaper) and 2048×2048
+(largest fixture still admitted by the default `WbmpLimits`
+8 MiB pixel cap). The `encode` bench also exercises
+`encode_wbmp_from_threshold` on a 320×240 grayscale fixture — the
+only per-pixel-branch hot loop in the encoder.
+
+Each scenario synthesises its fixture in-process from a deterministic
+xorshift32 source (no fixture files on disk) so the harness stays
+self-contained. Run with:
+
+```sh
+cargo bench -p oxideav-wbmp --bench decode
+cargo bench -p oxideav-wbmp --bench encode
+cargo bench -p oxideav-wbmp --bench roundtrip
+```
+
+Round-1 numbers on an Apple M1 Pro (release, single core) for context:
+decode tops out around 71 GiB/s on the 2048×2048 fixture (memory-copy
+bound), encode at 60 GiB/s on the 1024×1024 fixture, end-to-end
+roundtrip at 22 GiB/s on 1024×1024.
+
 ## Round 1 deferrals
 
 * WBMP Type values other than `0`. Later WAP releases reserved Type 1+
