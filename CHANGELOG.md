@@ -35,6 +35,19 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (no `oxideav-core` link). Initial sweep (~45 M + ~8 M executions)
   found no crashes; RSS stayed bounded, confirming the `checked_mul`,
   `MAX_MBI_BYTES`, and `WbmpLimits` allocation guards hold.
+- Round-5 perf: rewrote `encode_wbmp_from_threshold`'s per-row inner
+  loop to pack eight grayscale samples into one output byte in a single
+  expression (`((g[0] >= t) as u8) << 7 | … | (g[7] >= t) as u8`),
+  eliminating the per-pixel `row_out[x/8] |= 1 << (7 - (x%8))`
+  read-modify-write. The full-byte head of the row uses
+  `chunks_exact(8)`; a small tail loop covers the trailing 1..=7 pixels
+  when `width % 8 != 0`. Bit-exact-equivalent on every existing
+  roundtrip test (`threshold_helper_full_grayscale_ramp_roundtrip`,
+  `threshold_helper_2d_pattern_roundtrip`) plus a new dedicated
+  `threshold_helper_full_byte_plus_tail_bits` test pinning the exact
+  byte values for a width-11 input that exercises both code paths in
+  the same row. Measured at ~10 GiB/s on a 320×240 Gray8 fixture
+  (Apple M1 Pro, release, single core).
 - Round-4 depth-mode: Criterion bench suite (`benches/`) covering the
   three hot paths (`decode`, `encode`, `roundtrip`) at six
   representative sizes (8×8 / 96×64 / 320×240 / 159×33 / 1024×1024 /

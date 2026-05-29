@@ -92,13 +92,45 @@ pub fn encode_wbmp_from_threshold(
     let stride = WbmpImage::row_stride(width);
     let mut bits = vec![0u8; stride * height as usize];
     let w = width as usize;
+    let full_bytes = w / 8;
+    let tail_bits = w % 8;
+
     for y in 0..height as usize {
         let row_in = &gray[y * w..(y + 1) * w];
         let row_out = &mut bits[y * stride..(y + 1) * stride];
-        for x in 0..w {
-            if row_in[x] >= threshold {
-                row_out[x / 8] |= 1 << (7 - (x % 8));
+
+        // Pack eight samples per output byte without a branch on the
+        // hot loop body. `>= threshold` becomes a single comparison
+        // per sample, and the eight bit positions OR together into
+        // one byte with no in-place read-modify-write. The compiler
+        // unrolls this cleanly on every backend we ship.
+        for (out_byte, in_chunk) in row_out
+            .iter_mut()
+            .zip(row_in.chunks_exact(8))
+            .take(full_bytes)
+        {
+            *out_byte = ((in_chunk[0] >= threshold) as u8) << 7
+                | ((in_chunk[1] >= threshold) as u8) << 6
+                | ((in_chunk[2] >= threshold) as u8) << 5
+                | ((in_chunk[3] >= threshold) as u8) << 4
+                | ((in_chunk[4] >= threshold) as u8) << 3
+                | ((in_chunk[5] >= threshold) as u8) << 2
+                | ((in_chunk[6] >= threshold) as u8) << 1
+                | ((in_chunk[7] >= threshold) as u8);
+        }
+
+        // Final partial byte (`width % 8 != 0`): pack the remaining
+        // 1..=7 samples MSB-first into the last byte of the row,
+        // leaving the unused low bits at zero (the WBMP convention).
+        if tail_bits != 0 {
+            let base = full_bytes * 8;
+            let mut b: u8 = 0;
+            for k in 0..tail_bits {
+                if row_in[base + k] >= threshold {
+                    b |= 1 << (7 - k);
+                }
             }
+            row_out[full_bytes] = b;
         }
     }
 

@@ -141,7 +141,11 @@ cargo bench -p oxideav-wbmp --bench roundtrip
 Round-1 numbers on an Apple M1 Pro (release, single core) for context:
 decode tops out around 71 GiB/s on the 2048×2048 fixture (memory-copy
 bound), encode at 60 GiB/s on the 1024×1024 fixture, end-to-end
-roundtrip at 22 GiB/s on 1024×1024.
+roundtrip at 22 GiB/s on 1024×1024. Round-5 pushed the
+`encode_wbmp_from_threshold` path to ~10 GiB/s on the 320×240 Gray8
+fixture by replacing the per-pixel `|= 1 << k` read-modify-write loop
+with a packed eight-comparisons-per-output-byte loop that lets the
+codegen unroll the inner step cleanly.
 
 ## Round 1 deferrals
 

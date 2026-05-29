@@ -174,6 +174,26 @@ fn threshold_helper_2d_pattern_roundtrip() {
 }
 
 #[test]
+fn threshold_helper_full_byte_plus_tail_bits() {
+    // Width 11 → 1 full output byte (pixels 0..=7) + a 3-bit tail
+    // (pixels 8..=10). Exercises both branches of the per-row packing
+    // loop in the same row. We construct a row where the values
+    // straddle the threshold on both sides of the byte boundary, and
+    // assert the packed bits land in the exact bit positions the spec
+    // requires (MSB-first, padding bits zero).
+    //
+    // gray = [255, 0, 255, 0, 255, 0, 255, 0,   // full byte
+    //         255, 0, 255]                       // tail (3 bits)
+    // expected byte 0 = 0b10101010 = 0xAA
+    // expected byte 1 = 0b10100000 = 0xA0 (bit 7 / bit 5 set, low 5 = 0)
+    let gray = [255u8, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255];
+    let encoded = encode_wbmp_from_threshold(11, 1, &gray, 128).unwrap();
+    let decoded = parse_wbmp(&encoded).unwrap();
+    assert_eq!(decoded.planes[0].stride, 2);
+    assert_eq!(decoded.planes[0].data, [0xAA, 0xA0]);
+}
+
+#[test]
 fn encoded_byte_count_matches_handcalc() {
     // 8×8: 1+1+1+1 header bytes + 8 body bytes = 12 bytes total.
     let buf = encode_wbmp(8, 8, &[0u8; 8]).unwrap();
