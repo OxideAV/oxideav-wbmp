@@ -7,6 +7,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Round-6 API symmetry: caller-selectable decode polarity via
+  `parse_wbmp_as` / `parse_wbmp_as_with_limits` plus a new
+  `WbmpPixelFormat::MonoBlack` variant. The decode path performs the
+  bit-inversion + trailing-padding-bit mask in-place during the row
+  copy (no extra allocation versus the verbatim path) so consumers
+  expecting `1 = black` no longer need to walk the plane themselves
+  after decode. The padding-mask is the same one the encoder applies
+  on the `MonoBlack` ingress path, so an encode-then-decode through
+  matching polarities is bit-exact on the payload bits and zero on the
+  padding tail of every row. Under the default-on `registry` feature
+  the framework `Decoder` honours
+  `CodecParameters::pixel_format = Some(PixelFormat::MonoBlack)` and
+  routes through the same in-place transform; the standalone API path
+  is unchanged for callers passing `MonoWhite` (the on-disk polarity).
+  Coverage: 7 new unit tests covering the full-byte, 5-bit-padding,
+  multi-row + limits-propagation cases on top of the existing 48-test
+  baseline.
 - Initial round-1 implementation: WBMP Type 0 (uncompressed B/W bitmap)
   reader + writer, clean-room from the WAP Forum WAP-237 specification.
 - Multi-Byte Integer (MBI) codec helpers for variable-length unsigned

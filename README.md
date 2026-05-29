@@ -31,10 +31,30 @@ truncation.
 
 | Type | Channels | Bit depth | `PixelFormat` out |
 |------|----------|-----------|-------------------|
-| 0    | 1 (1-bit) | 1        | `MonoWhite` (1 = white, MSB-first) |
+| 0    | 1 (1-bit) | 1        | `MonoWhite` (verbatim) or `MonoBlack` (caller-selected polarity) |
 
 Other Type values raise `WbmpError::Unsupported`. None ever shipped
 in public WAP profiles.
+
+`parse_wbmp` (and `parse_wbmp_with_limits`) emit the on-disk
+polarity unchanged — `WbmpPixelFormat::MonoWhite`, where bit `1` is
+white. Callers that want the inverted polarity for downstream
+consumers reach for `parse_wbmp_as` (or `parse_wbmp_as_with_limits`):
+
+```rust
+use oxideav_wbmp::{parse_wbmp_as, WbmpPixelFormat};
+let img = parse_wbmp_as(&bytes, WbmpPixelFormat::MonoBlack)?;
+// img.planes[0].data: every payload bit inverted, every row's
+// trailing padding bits re-zeroed so they stay distinguishable
+// from real `1`-bit "black" pixels on inspection.
+```
+
+The polarity flip happens in-place during the decode-time row copy
+— no extra allocation versus the verbatim path. Under the
+default-on `registry` feature, setting
+`params.pixel_format = Some(PixelFormat::MonoBlack)` on the
+`CodecParameters` handed to the framework decoder selects the same
+behaviour through the `Decoder` trait.
 
 ## Encode
 

@@ -16,16 +16,28 @@ use crate::limits::WbmpLimits;
 #[cfg(feature = "registry")]
 use oxideav_core::Decoder;
 #[cfg(feature = "registry")]
-use oxideav_core::{CodecId, CodecParameters, Frame, Packet, VideoFrame, VideoPlane};
+use oxideav_core::{CodecId, CodecParameters, Frame, Packet, PixelFormat, VideoFrame, VideoPlane};
 
 /// Factory registered with the codec registry. One packet per whole
 /// WBMP file; one frame per packet.
+///
+/// The caller can opt into [`oxideav_core::PixelFormat::MonoBlack`]
+/// by setting `params.pixel_format = Some(PixelFormat::MonoBlack)` on
+/// the [`CodecParameters`] passed into the registry — the decoder
+/// will perform the polarity flip + padding-bit mask in-place during
+/// decode. Any other value (including `None`) keeps the on-disk
+/// [`PixelFormat::MonoWhite`] polarity.
 #[cfg(feature = "registry")]
-pub fn make_decoder(_params: &CodecParameters) -> oxideav_core::Result<Box<dyn Decoder>> {
+pub fn make_decoder(params: &CodecParameters) -> oxideav_core::Result<Box<dyn Decoder>> {
+    let target = match params.pixel_format {
+        Some(PixelFormat::MonoBlack) => WbmpPixelFormat::MonoBlack,
+        _ => WbmpPixelFormat::MonoWhite,
+    };
     Ok(Box::new(WbmpDecoder {
         codec_id: CodecId::new(crate::CODEC_ID_STR),
         pending: None,
         eof: false,
+        target,
     }))
 }
 
@@ -34,6 +46,7 @@ struct WbmpDecoder {
     codec_id: CodecId,
     pending: Option<VideoFrame>,
     eof: bool,
+    target: WbmpPixelFormat,
 }
 
 #[cfg(feature = "registry")]
@@ -42,7 +55,7 @@ impl Decoder for WbmpDecoder {
         &self.codec_id
     }
     fn send_packet(&mut self, packet: &Packet) -> oxideav_core::Result<()> {
-        let image = parse_wbmp(&packet.data)?;
+        let image = parse_wbmp_as(&packet.data, self.target)?;
         self.pending = Some(image_to_video_frame(image));
         Ok(())
     }
@@ -151,6 +164,99 @@ pub fn parse_wbmp_with_limits(input: &[u8], limits: &WbmpLimits) -> Result<WbmpI
         planes: vec![WbmpPlane { stride, data }],
         pts: None,
     })
+}
+
+/// Decode a WBMP file into the requested [`WbmpPixelFormat`] using the
+/// default [`WbmpLimits`].
+///
+/// Behaves identically to [`parse_wbmp`] when `target` is
+/// [`WbmpPixelFormat::MonoWhite`]. When `target` is
+/// [`WbmpPixelFormat::MonoBlack`] every bit is inverted before being
+/// returned, and any padding bits in the last byte of every row are
+/// masked back to zero so they stay distinguishable from real black
+/// pixels — matching the symmetric convention the encoder uses when it
+/// accepts a `MonoBlack` plane.
+///
+/// The wire format never changes — this is a decode-side convenience
+/// only, equivalent to (but cheaper than) parsing first and walking
+/// the plane afterwards because the inversion happens in-place during
+/// the decode-time row copy.
+pub fn parse_wbmp_as(input: &[u8], target: WbmpPixelFormat) -> Result<WbmpImage> {
+    parse_wbmp_as_with_limits(input, target, &WbmpLimits::default())
+}
+
+/// Decode a WBMP file into the requested [`WbmpPixelFormat`] with
+/// caller-supplied [`WbmpLimits`].
+///
+/// See [`parse_wbmp_as`] for the polarity semantics and
+/// [`parse_wbmp_with_limits`] for the limits semantics.
+pub fn parse_wbmp_as_with_limits(
+    input: &[u8],
+    target: WbmpPixelFormat,
+    limits: &WbmpLimits,
+) -> Result<WbmpImage> {
+    let mut image = parse_wbmp_with_limits(input, limits)?;
+    convert_plane_polarity(&mut image, target);
+    Ok(image)
+}
+
+/// Apply an in-place polarity transform to bring the on-disk
+/// `MonoWhite` plane returned by [`parse_wbmp_with_limits`] into the
+/// caller's requested [`WbmpPixelFormat`].
+///
+/// No-op when `target == MonoWhite`. For `MonoBlack` we invert every
+/// payload byte and then zero out the padding bits in the last byte of
+/// every row (so a `1`-bit in the plane unambiguously means "black",
+/// rather than "either black or unused padding bit").
+fn convert_plane_polarity(image: &mut WbmpImage, target: WbmpPixelFormat) {
+    if image.pixel_format == target {
+        return;
+    }
+    match target {
+        WbmpPixelFormat::MonoWhite => {
+            // The decode path always emits MonoWhite verbatim — this
+            // branch only fires if the caller passes a MonoBlack image
+            // back through us. Same masking + inversion logic round-
+            // trips cleanly to MonoWhite.
+            invert_plane_in_place(image);
+            image.pixel_format = WbmpPixelFormat::MonoWhite;
+        }
+        WbmpPixelFormat::MonoBlack => {
+            invert_plane_in_place(image);
+            image.pixel_format = WbmpPixelFormat::MonoBlack;
+        }
+    }
+}
+
+/// Flip every bit of the single packed plane in `image` and re-zero
+/// the padding bits in the last byte of every row.
+///
+/// Padding handling matters: after inverting, what used to be a
+/// row's trailing-zero padding becomes a trailing-one run that
+/// callers iterating bit-by-bit would mistake for real foreground
+/// pixels. We mask it back to zero so the plane stays well-formed
+/// regardless of polarity.
+fn invert_plane_in_place(image: &mut WbmpImage) {
+    let plane = &mut image.planes[0];
+    for b in plane.data.iter_mut() {
+        *b = !*b;
+    }
+    let width = image.width as usize;
+    let stride = plane.stride;
+    let pad_bits = stride.saturating_mul(8).saturating_sub(width);
+    if pad_bits > 0 && pad_bits < 8 && stride > 0 {
+        // Mask of the leading `8 - pad_bits` MSB-first pixel bits.
+        // For width=11 (stride=2, pad_bits=5) → mask 0b1110_0000.
+        // Matches the encoder's MonoBlack padding-mask in
+        // `encoder::WbmpEncoder::send_frame`.
+        let mask: u8 = 0xFFu8 << pad_bits;
+        for y in 0..image.height as usize {
+            let last = y * stride + (stride - 1);
+            if last < plane.data.len() {
+                plane.data[last] &= mask;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -319,6 +425,118 @@ mod tests {
             }
             let _ = parse_wbmp(&buf);
         }
+    }
+
+    // --- Polarity (MonoWhite ↔ MonoBlack) decode tests. ---
+
+    #[test]
+    fn parse_as_monowhite_matches_parse_wbmp() {
+        // parse_wbmp_as(MonoWhite) must be byte-for-byte identical to
+        // parse_wbmp for the same input.
+        let mut buf = Vec::new();
+        write_header(11, 3, &mut buf);
+        let body = [0xAA, 0x80, 0x55, 0xA0, 0xC3, 0x40];
+        buf.extend_from_slice(&body);
+        let a = parse_wbmp(&buf).unwrap();
+        let b = parse_wbmp_as(&buf, WbmpPixelFormat::MonoWhite).unwrap();
+        assert_eq!(a.pixel_format, WbmpPixelFormat::MonoWhite);
+        assert_eq!(b.pixel_format, WbmpPixelFormat::MonoWhite);
+        assert_eq!(a.planes[0].data, b.planes[0].data);
+    }
+
+    #[test]
+    fn parse_as_monoblack_inverts_full_byte_rows() {
+        // 8×1 byte-aligned row: the polarity flip is a clean `!byte`
+        // with no padding to mask.
+        let mut buf = Vec::new();
+        write_header(8, 1, &mut buf);
+        buf.push(0b1010_0110);
+        let img = parse_wbmp_as(&buf, WbmpPixelFormat::MonoBlack).unwrap();
+        assert_eq!(img.pixel_format, WbmpPixelFormat::MonoBlack);
+        assert_eq!(img.planes[0].stride, 1);
+        assert_eq!(img.planes[0].data, [0b0101_1001]);
+    }
+
+    #[test]
+    fn parse_as_monoblack_masks_padding_bits() {
+        // 11×1 → stride 2, 5 padding bits in the last byte. After
+        // inversion those would become five trailing `1` bits unless
+        // masked. We assert they're back to zero.
+        let mut buf = Vec::new();
+        write_header(11, 1, &mut buf);
+        // First 11 bits (MSB-first): 1010 1100 111 — packed
+        // 0xAC, then 0xE0 (with 5 padding zeros).
+        buf.push(0xAC);
+        buf.push(0xE0);
+        let img = parse_wbmp_as(&buf, WbmpPixelFormat::MonoBlack).unwrap();
+        // Inverted: 0x53 in byte 0; byte 1 inversion would give
+        // 0x1F, but masking the 5 padding bits zeroes them → 0x00.
+        assert_eq!(img.planes[0].data, [0x53, 0x00]);
+    }
+
+    #[test]
+    fn parse_as_monoblack_roundtrips_through_inversion() {
+        // Decoding to MonoBlack twice (via parse_as → encode → parse_as)
+        // recovers the original on-disk bits exactly. We pick a width
+        // with a non-trivial padding tail (159 → 4 padding bits).
+        let stride = WbmpImage::row_stride(159);
+        let mut bits = vec![0u8; stride * 5];
+        let mut seed: u64 = 0xC0FF_EE00_BAAD_F00D;
+        for byte in bits.iter_mut() {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *byte = seed as u8;
+        }
+        // Pre-zero the padding bits in the test fixture so the round
+        // trip target is well-formed input → MonoWhite verbatim.
+        let pad_bits = stride * 8 - 159;
+        let mask: u8 = 0xFFu8 << pad_bits;
+        for y in 0..5 {
+            let last = y * stride + (stride - 1);
+            bits[last] &= mask;
+        }
+        let encoded = crate::encoder::encode_wbmp(159, 5, &bits).unwrap();
+        // First decode: MonoBlack (inverted with padding masked).
+        let blk = parse_wbmp_as(&encoded, WbmpPixelFormat::MonoBlack).unwrap();
+        assert_eq!(blk.pixel_format, WbmpPixelFormat::MonoBlack);
+        // Manually invert + mask: must match the MonoBlack plane bit-
+        // for-bit.
+        let mut expect = bits.clone();
+        for b in expect.iter_mut() {
+            *b = !*b;
+        }
+        for y in 0..5 {
+            let last = y * stride + (stride - 1);
+            expect[last] &= mask;
+        }
+        assert_eq!(blk.planes[0].data, expect);
+    }
+
+    #[test]
+    fn parse_as_monoblack_respects_limits() {
+        // Limit checks fire before the polarity flip — a MonoBlack
+        // decode of an over-sized header must still raise
+        // LimitExceeded, not run through the inversion loop on
+        // unallocated memory.
+        let mut buf = Vec::new();
+        write_header(16_000, 16_000, &mut buf);
+        let err = parse_wbmp_as(&buf, WbmpPixelFormat::MonoBlack).unwrap_err();
+        assert!(matches!(err, WbmpError::LimitExceeded(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_as_with_limits_propagates_unbounded() {
+        // 20000×1 (2500 body bytes) blows the default width cap but
+        // passes with WbmpLimits::unbounded(), in both polarities.
+        let mut buf = Vec::new();
+        write_header(20_000, 1, &mut buf);
+        buf.extend_from_slice(&[0xFFu8; 2500]);
+        let lim = WbmpLimits::unbounded();
+        let w = parse_wbmp_as_with_limits(&buf, WbmpPixelFormat::MonoWhite, &lim).unwrap();
+        let b = parse_wbmp_as_with_limits(&buf, WbmpPixelFormat::MonoBlack, &lim).unwrap();
+        assert_eq!(w.planes[0].data, vec![0xFFu8; 2500]);
+        assert_eq!(b.planes[0].data, vec![0x00u8; 2500]);
     }
 
     #[test]

@@ -9,12 +9,20 @@
 //! `From<WbmpError> for oxideav_core::Error` impl so the trait-side
 //! `Decoder` / `Encoder` impls keep working unchanged.
 
-/// Pixel layout used by [`WbmpImage`]. WBMP Type 0 only carries
-/// monochrome 1-bit-per-pixel data, so the enum has a single variant
-/// today; it stays here as an enum for symmetry with the rest of the
-/// workspace's image crates and so future WBMP types (greyscale,
-/// colour) — should they ever ship — can land as additional variants
-/// without a breaking API change.
+/// Pixel layout used by [`WbmpImage`]. WBMP Type 0 carries
+/// monochrome 1-bit-per-pixel data; the on-disk polarity is fixed
+/// (1 = white per WAP-237 §8.4) but callers may want the decoded
+/// plane in either polarity to match downstream image-buffer
+/// conventions without having to re-walk the plane themselves.
+///
+/// Both variants share the same `stride = ceil(width / 8)`,
+/// MSB-first bit-order, row-padded layout; the only difference is
+/// the meaning of a `1` bit.
+///
+/// The standalone [`crate::parse_wbmp`] entry point always returns
+/// [`Self::MonoWhite`] (the on-disk layout). Callers that want the
+/// inverted polarity opt in via [`crate::parse_wbmp_as`] /
+/// [`crate::parse_wbmp_as_with_limits`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WbmpPixelFormat {
     /// 1 bit per pixel, MSB-first packed, **1 = white, 0 = black**
@@ -22,6 +30,15 @@ pub enum WbmpPixelFormat {
     /// `stride = ceil(width / 8)`. Maps to `oxideav_core::PixelFormat::MonoWhite`
     /// when the `registry` feature is on.
     MonoWhite,
+    /// 1 bit per pixel, MSB-first packed, **1 = black, 0 = white**
+    /// (the polarity inverse of [`Self::MonoWhite`]). Produced only
+    /// when the caller explicitly opts in via
+    /// [`crate::parse_wbmp_as`] / [`crate::parse_wbmp_as_with_limits`].
+    /// Padding bits in the last byte of every row are zero (so they
+    /// stay distinguishable from real `1`-bit black pixels on
+    /// inspection). Maps to `oxideav_core::PixelFormat::MonoBlack`
+    /// when the `registry` feature is on.
+    MonoBlack,
 }
 
 /// One image plane: row-major bytes plus the row stride in bytes.
@@ -52,8 +69,10 @@ pub struct WbmpImage {
     pub width: u32,
     /// Picture height in pixels.
     pub height: u32,
-    /// Pixel layout the planes carry. Always
-    /// [`WbmpPixelFormat::MonoWhite`] in this round.
+    /// Pixel layout the planes carry. [`WbmpPixelFormat::MonoWhite`]
+    /// for [`crate::parse_wbmp`] (the on-disk polarity);
+    /// [`WbmpPixelFormat::MonoBlack`] when the caller opts in via
+    /// [`crate::parse_wbmp_as`].
     pub pixel_format: WbmpPixelFormat,
     /// One [`WbmpPlane`] per plane. WBMP only ever ships a single
     /// packed plane, so this is always `len() == 1`.
