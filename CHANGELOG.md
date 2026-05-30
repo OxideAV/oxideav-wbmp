@@ -6,6 +6,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/OxideAV/oxideav-wbmp/compare/v0.0.1...v0.0.2) - 2026-05-29
+
+### Other
+
+- Round-6 API symmetry: caller-selectable MonoWhite/MonoBlack decode polarity
+- Round-5 perf: chunked 8-pixel pack in encode_wbmp_from_threshold
+- Round-4 depth-mode: Criterion bench suite
+- Round-3 hardening: add cargo-fuzz harness (decode + roundtrip)
+- Round-2 hardening: WbmpLimits + tightened MBI cap + adversarial-input sweep
+
 ### Added
 - Round-6 API symmetry: caller-selectable decode polarity via
   `parse_wbmp_as` / `parse_wbmp_as_with_limits` plus a new
