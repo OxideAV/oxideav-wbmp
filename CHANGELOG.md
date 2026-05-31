@@ -6,6 +6,24 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Round-7 hardening: third `cargo-fuzz` target `threshold` exercising
+  `encode_wbmp_from_threshold` end-to-end. The fuzzer drives small
+  dimensions (1..=256 on each axis to stay under the default
+  `WbmpLimits`) plus a fuzz-controlled threshold, synthesises a
+  grayscale buffer cycled from the remaining fuzz input, runs the
+  threshold-encoder, decodes the result, and asserts (a) the packed
+  bits match a bit-by-bit reference, and (b) the per-row padding bits
+  are zero regardless of input grayscale values. Covers the only
+  public entry point with non-trivial per-pixel logic that the
+  existing `decode` and `roundtrip` targets don't reach — the
+  chunked-eight-pixels-per-output-byte main loop plus the 1..=7-pixel
+  tail branch. Initial 60-second sweep on Apple M1 Pro: 1.15 M
+  executions, no crashes, RSS bounded at ~471 MiB, libFuzzer feature
+  coverage saturated at 319 features / 1630 ft inside the first ~5 s.
+  Builds with `default-features = false` (no `oxideav-core` link), same
+  shape as the other two targets.
+
 ## [0.0.2](https://github.com/OxideAV/oxideav-wbmp/compare/v0.0.1...v0.0.2) - 2026-05-29
 
 ### Other

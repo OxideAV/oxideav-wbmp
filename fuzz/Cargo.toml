@@ -15,19 +15,29 @@ cargo-fuzz = true
 # wall bars any external WBMP source anyway, so these targets are
 # **oxideav-only**:
 #
-#  * `decode`    — feed arbitrary bytes to `parse_wbmp` and assert it
-#                  always returns a `Result` rather than panicking /
-#                  aborting / OOMing. The classic overflow spots are the
-#                  multi-byte width/height parse and the `stride * height`
-#                  pixel-buffer allocation; both are guarded in the
-#                  decoder and this target keeps them honest.
-#  * `roundtrip` — synthesise a valid Type-0 file from fuzz-controlled
-#                  dimensions + packed bits, decode it, and assert the
-#                  dimensions and plane bytes survive the round trip.
+#  * `decode`     — feed arbitrary bytes to `parse_wbmp` and assert it
+#                   always returns a `Result` rather than panicking /
+#                   aborting / OOMing. The classic overflow spots are
+#                   the multi-byte width/height parse and the
+#                   `stride * height` pixel-buffer allocation; both are
+#                   guarded in the decoder and this target keeps them
+#                   honest.
+#  * `roundtrip`  — synthesise a valid Type-0 file from fuzz-controlled
+#                   dimensions + packed bits, decode it, and assert the
+#                   dimensions and plane bytes survive the round trip.
+#  * `threshold`  — synthesise an 8-bit grayscale plane from fuzz-
+#                   controlled dimensions + a fuzz-controlled threshold,
+#                   run it through `encode_wbmp_from_threshold`, decode
+#                   the result, and assert the packed bits match a
+#                   bit-by-bit reference and the per-row padding bits
+#                   are zero. Covers the `encode_wbmp_from_threshold`
+#                   hot loop — the only public entry point with non-
+#                   trivial per-pixel logic the other two targets miss.
 #
 # The crate is pulled in with `default-features = false` so the fuzz
 # build exercises the framework-free standalone `parse_wbmp` /
-# `encode_wbmp` path and never links `oxideav-core`.
+# `encode_wbmp` / `encode_wbmp_from_threshold` path and never links
+# `oxideav-core`.
 
 [dependencies]
 libfuzzer-sys = "0.4"
@@ -52,5 +62,11 @@ doc = false
 [[bin]]
 name = "roundtrip"
 path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "threshold"
+path = "fuzz_targets/threshold.rs"
 test = false
 doc = false

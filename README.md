@@ -112,7 +112,7 @@ O(1) rather than chasing the input.
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
-in [`fuzz/`](fuzz/) with two libFuzzer targets:
+in [`fuzz/`](fuzz/) with three libFuzzer targets:
 
 * `decode` — feeds arbitrary bytes to `parse_wbmp`; the decoder must
   return a `Result` and never panic / abort / OOM. The classic overflow
@@ -123,18 +123,35 @@ in [`fuzz/`](fuzz/) with two libFuzzer targets:
 * `roundtrip` — synthesises a valid Type-0 file from fuzz-controlled
   small dimensions + packed bits, decodes it, and asserts dimensions and
   plane bytes survive the round trip bit-for-bit.
+* `threshold` — synthesises an 8-bit grayscale plane from fuzz-controlled
+  small dimensions + a fuzz-controlled threshold, runs
+  `encode_wbmp_from_threshold`, decodes the produced file, and asserts
+  (a) the packed bits match a bit-by-bit reference that walks the
+  grayscale buffer column-by-column setting bit `7 - x%8` whenever
+  `gray[y*w + x] >= threshold`, and (b) the padding bits in the last
+  byte of every row are zero regardless of the input grayscale values.
+  This covers the only public entry point with non-trivial per-pixel
+  logic that the other two targets miss — the chunked-eight-pixels-
+  per-output-byte main loop plus the 1..=7-pixel tail branch.
 
-Both build with `default-features = false`, so the harness exercises the
-framework-free standalone path and never links `oxideav-core`. Run:
+All three build with `default-features = false`, so the harness
+exercises the framework-free standalone path and never links
+`oxideav-core`. Run:
 
 ```sh
 cargo +nightly fuzz run decode
 cargo +nightly fuzz run roundtrip
+cargo +nightly fuzz run threshold
 ```
 
-The initial sweep (~45 M `decode` + ~8 M `roundtrip` executions) found
+Round-1 sweep (~45 M `decode` + ~8 M `roundtrip` executions) found
 no crashes; RSS stayed under ~530 MiB throughout, confirming the
-allocation guards hold against adversarial headers.
+allocation guards hold against adversarial headers. Round-7 added the
+`threshold` target and ran a 60-second smoke sweep: 1.15 M executions,
+no crashes, RSS bounded at ~471 MiB, libFuzzer coverage saturated at
+319 features / 1630 ft within the first ~5 s — the encode-side
+arithmetic and per-row indexing are panic-free across every reachable
+input shape the fuzzer explored.
 
 ## Benchmarks
 
