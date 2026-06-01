@@ -7,6 +7,30 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Round-8 API surface: `encode_wbmp_from_dither(width, height, gray,
+  threshold)` — Floyd–Steinberg error-diffusion sibling of
+  `encode_wbmp_from_threshold`. Same input shape and same
+  `>= threshold` per-pixel quantisation decision, but the
+  quantisation error (`source − target`) is distributed to the four
+  canonical 1976 Floyd–Steinberg neighbours (`7/16` right, `3/16`
+  below-left, `5/16` below, `1/16` below-right). Pixels at row/column
+  edges drop the out-of-bounds share silently. Working buffer is two
+  `i16` rows (`4 * width` bytes), independent of image height. The
+  long-run average brightness of every local region in the output
+  matches the input, so photographic input keeps recognisable detail
+  instead of collapsing into white-or-black bands; for inputs that
+  are far enough above or below the threshold to never flip a
+  quantisation decision the dither path agrees with
+  `encode_wbmp_from_threshold` bit-for-bit (pinned in the
+  `dither_helper_matches_threshold_at_extremes` test). The framework
+  `Encoder` (registry feature) keeps the hard-threshold default on
+  `Gray8` so existing consumers are bit-exact unchanged; the dither
+  path is exposed only via the standalone API. Coverage: 8 new unit
+  tests covering solid-white, solid-black, mid-grey density
+  conservation, horizontal-ramp left/right white-density inequality,
+  zero-padding in the partial-byte tail, threshold-extreme agreement,
+  wrong-size rejection, zero-dimension rejection, and a 17×9 odd-
+  width roundtrip. Lib test count: 45 → 53.
 - Round-7 hardening: third `cargo-fuzz` target `threshold` exercising
   `encode_wbmp_from_threshold` end-to-end. The fuzzer drives small
   dimensions (1..=256 on each axis to stay under the default

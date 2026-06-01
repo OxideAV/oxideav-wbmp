@@ -36,6 +36,9 @@
 //!   the plane well-formed.
 //! * [`encode_wbmp`] — `(width, height, packed_bits)` → bytes.
 //! * [`encode_wbmp_from_threshold`] — `(width, height, gray, threshold)` → bytes.
+//! * [`encode_wbmp_from_dither`] — `(width, height, gray, threshold)` → bytes
+//!   via Floyd–Steinberg error diffusion (preserves average brightness
+//!   on photographic input where a hard threshold would flatten detail).
 //!
 //! Registry-gated (default-on `registry` feature, pulls
 //! `oxideav-core`):
@@ -50,8 +53,9 @@
 //! a [`registry::register`] entry point. Disable the feature
 //! (`default-features = false`) for an `oxideav-core`-free build that
 //! still exposes the standalone [`parse_wbmp`] / [`encode_wbmp`] /
-//! [`encode_wbmp_from_threshold`] API and the crate-local
-//! [`WbmpImage`] / [`WbmpError`] / [`WbmpPixelFormat`] types.
+//! [`encode_wbmp_from_threshold`] / [`encode_wbmp_from_dither`] API and
+//! the crate-local [`WbmpImage`] / [`WbmpError`] / [`WbmpPixelFormat`]
+//! types.
 //!
 //! ## Source provenance
 //!
@@ -76,7 +80,7 @@ pub mod registry;
 pub const CODEC_ID_STR: &str = "wbmp";
 
 pub use decoder::{parse_wbmp, parse_wbmp_as, parse_wbmp_as_with_limits, parse_wbmp_with_limits};
-pub use encoder::{encode_wbmp, encode_wbmp_from_threshold};
+pub use encoder::{encode_wbmp, encode_wbmp_from_dither, encode_wbmp_from_threshold};
 pub use error::{Result, WbmpError};
 pub use header::{parse_header, write_header, Header};
 pub use image::{WbmpImage, WbmpPixelFormat, WbmpPlane};

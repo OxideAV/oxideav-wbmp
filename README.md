@@ -64,9 +64,30 @@ Type-0 header. [`encode_wbmp_from_threshold`] thresholds an 8-bit
 grayscale buffer (one byte per pixel, no row padding) at the supplied
 cut-off and produces a complete WBMP file in one call.
 
+[`encode_wbmp_from_dither`] is the dither-aware sibling of
+`encode_wbmp_from_threshold` — same input shape, same `threshold`
+parameter, but uses Floyd–Steinberg error diffusion (the canonical
+1976 weight distribution `7/16` right, `3/16` below-left, `5/16`
+below, `1/16` below-right) to push each pixel's quantisation error
+into its as-yet-unprocessed neighbours. The per-pixel decision is
+still the same `>= threshold` rule, but the long-run average
+brightness of every local region in the output matches the input, so
+photographic input keeps recognisable detail instead of collapsing
+into white-or-black bands. Working buffer is two `i16` rows
+(`4 * width` bytes), independent of image height:
+
+```rust
+use oxideav_wbmp::encode_wbmp_from_dither;
+// 256×256 grayscale photo, mid-grey cutoff.
+let buf = encode_wbmp_from_dither(256, 256, &gray, 128)?;
+```
+
 When the `registry` feature is on, the framework `Encoder` trait
 accepts `MonoWhite` (verbatim), `MonoBlack` (polarity-flipped, with
-padding bits re-zeroed) and `Gray8` (thresholded at 128 by default).
+padding bits re-zeroed) and `Gray8` (thresholded at 128 by default —
+the framework `Encoder` keeps the hard-threshold default so existing
+consumers are bit-exact unchanged; callers wanting dithered output
+reach for the standalone `encode_wbmp_from_dither` entry point).
 
 ## Standalone vs registry-integrated
 
