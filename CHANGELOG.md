@@ -6,6 +6,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-wbmp/compare/v0.0.2...v0.0.3) - 2026-06-01
+
+### Other
+
+- Round-8 API surface: encode_wbmp_from_dither (Floyd-Steinberg)
+- Round-7 hardening: third cargo-fuzz target for encode_wbmp_from_threshold
+
 ### Added
 - Round-8 API surface: `encode_wbmp_from_dither(width, height, gray,
   threshold)` — Floyd–Steinberg error-diffusion sibling of
