@@ -6,7 +6,7 @@ WBMP **Type 0** (uncompressed monochrome bitmap) — the only widely-
 deployed WBMP variant — in one self-contained crate. Spec source: the
 publicly published WAP Forum specification *WAP-237 Wireless
 Application Environment Specification* (May 2001), §8 "Image
-Formats". No external implementation source was consulted.
+Formats".
 
 ## Wire format (Type 0)
 
@@ -63,6 +63,16 @@ MSB-first, 1 = white, rows padded to a byte boundary) and prepends a
 Type-0 header. [`encode_wbmp_from_threshold`] thresholds an 8-bit
 grayscale buffer (one byte per pixel, no row padding) at the supplied
 cut-off and produces a complete WBMP file in one call.
+[`encode_wbmp_from_dither`] takes the same 8-bit grayscale buffer
+and runs a Floyd–Steinberg error-diffusion quantiser before packing,
+so a smoothly-shaded photographic input lands as a stippled rendering
+rather than collapsing every mid-tone to a flat region. The dither
+helper uses an i16 row-accumulator (`O(width)` extra space) and the
+classic 7/16, 3/16, 5/16, 1/16 forward-neighbour distribution;
+saturated black/white pixels diffuse zero residual, so flat-mono
+input agrees byte-for-byte with `encode_wbmp_from_threshold(.., 128)`.
+Reference: R. W. Floyd and L. Steinberg, "An adaptive algorithm for
+spatial greyscale", *Proc. SID* 17/2 (1976), pp. 75–77.
 
 When the `registry` feature is on, the framework `Encoder` trait
 accepts `MonoWhite` (verbatim), `MonoBlack` (polarity-flipped, with

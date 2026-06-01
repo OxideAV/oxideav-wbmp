@@ -36,6 +36,10 @@
 //!   the plane well-formed.
 //! * [`encode_wbmp`] — `(width, height, packed_bits)` → bytes.
 //! * [`encode_wbmp_from_threshold`] — `(width, height, gray, threshold)` → bytes.
+//! * [`encode_wbmp_from_dither`] — `(width, height, gray)` → bytes,
+//!   running Floyd–Steinberg error-diffusion before packing so
+//!   photographic mid-tones land as stippled patterns rather than
+//!   collapsing to a flat region.
 //!
 //! Registry-gated (default-on `registry` feature, pulls
 //! `oxideav-core`):
@@ -56,8 +60,7 @@
 //! ## Source provenance
 //!
 //! Implemented clean-room from the publicly published WAP Forum
-//! specification (WAP-237-WAESpec, May 2001). No external library
-//! source was consulted, paraphrased, or cross-checked at any stage.
+//! specification (WAP-237-WAESpec, May 2001).
 
 pub mod decoder;
 pub mod encoder;
@@ -76,7 +79,7 @@ pub mod registry;
 pub const CODEC_ID_STR: &str = "wbmp";
 
 pub use decoder::{parse_wbmp, parse_wbmp_as, parse_wbmp_as_with_limits, parse_wbmp_with_limits};
-pub use encoder::{encode_wbmp, encode_wbmp_from_threshold};
+pub use encoder::{encode_wbmp, encode_wbmp_from_dither, encode_wbmp_from_threshold};
 pub use error::{Result, WbmpError};
 pub use header::{parse_header, write_header, Header};
 pub use image::{WbmpImage, WbmpPixelFormat, WbmpPlane};

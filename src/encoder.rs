@@ -1,6 +1,6 @@
 //! WBMP Type-0 encoder.
 //!
-//! Two standalone entry points:
+//! Three standalone entry points:
 //!
 //! * [`encode_wbmp`] — accept an already-packed mono plane (1 bit per
 //!   pixel, MSB-first, 1 = white, rows padded to a byte boundary) and
@@ -10,8 +10,16 @@
 //!   a tightly-packed 8-bit grayscale buffer (one byte per pixel, no
 //!   row padding) and a brightness threshold, then produces the
 //!   1-bit-per-pixel plane and a complete WBMP file in one call.
+//! * [`encode_wbmp_from_dither`] — alternative wrapper that runs a
+//!   Floyd–Steinberg error-diffusion quantiser over the same 8-bit
+//!   grayscale input before packing. Useful for photographic source
+//!   material where a hard threshold collapses every mid-tone to a
+//!   flat region. Reference: R. W. Floyd and L. Steinberg, "An
+//!   adaptive algorithm for spatial greyscale", Proc. SID
+//!   17/2 (1976), pp. 75–77.
 //!
-//! Both functions emit the same bytes for the same logical input, so
+//! All three functions emit the same wire layout for the same
+//! resulting bit plane, so
 //! `parse_wbmp(encode_wbmp(w, h, bits)).unwrap()` round-trips bit
 //! exactly.
 
@@ -135,6 +143,135 @@ pub fn encode_wbmp_from_threshold(
     }
 
     encode_wbmp(width, height, &bits)
+}
+
+/// Floyd–Steinberg error-diffusion quantiser → WBMP Type-0 file.
+///
+/// Walks the 8-bit grayscale input left-to-right, top-to-bottom. At
+/// each pixel the running luminance value is compared against 128:
+/// values `>= 128` emit a white bit (1) and clamp the quantised
+/// output to 255; values below emit a black bit (0) with output 0.
+/// The signed error `actual - quantised` (range −128..=127) is then
+/// diffused to the four forward neighbours in the classic
+/// 7/16, 3/16, 5/16, 1/16 distribution:
+///
+/// ```text
+///                   X    7/16
+///         3/16   5/16   1/16
+/// ```
+///
+/// The accumulator uses i16 so the propagated error never wraps; the
+/// outgoing pixel is clamped back into 0..=255 before the next
+/// pixel's threshold. This produces a stippled rendering that
+/// preserves local average luminance — markedly better than a hard
+/// threshold for photographic material at the cost of one extra
+/// scratch row of i16 storage.
+///
+/// `gray.len()` must equal `width * height`. Inputs are consumed by
+/// value-copy into the scratch buffer; the caller's buffer is not
+/// mutated.
+///
+/// Reference: R. W. Floyd and L. Steinberg, "An adaptive algorithm
+/// for spatial greyscale", Proc. SID 17/2 (1976), pp. 75–77.
+pub fn encode_wbmp_from_dither(width: u32, height: u32, gray: &[u8]) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(WbmpError::invalid(format!(
+            "encode_wbmp_from_dither: zero dimension (width={width}, height={height})"
+        )));
+    }
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| {
+            WbmpError::invalid("encode_wbmp_from_dither: width × height overflows usize")
+        })?;
+    if gray.len() != pixel_count {
+        return Err(WbmpError::invalid(format!(
+            "encode_wbmp_from_dither: gray length {} != width*height {pixel_count}",
+            gray.len()
+        )));
+    }
+
+    let w = width as usize;
+    let h = height as usize;
+    let stride = WbmpImage::row_stride(width);
+    let mut bits = vec![0u8; stride * h];
+
+    // Two i16 row buffers: `cur` is the row we're quantising now,
+    // `next` accumulates the forward-diffused errors for the row
+    // below. Swap on each row boundary so the algorithm runs in
+    // O(width) extra space rather than holding the whole frame in
+    // i16.
+    let mut cur: Vec<i16> = Vec::with_capacity(w);
+    let mut next: Vec<i16> = vec![0; w];
+
+    // Seed the first row from the input.
+    cur.extend(gray[..w].iter().map(|&g| g as i16));
+
+    for y in 0..h {
+        let row_out = &mut bits[y * stride..(y + 1) * stride];
+
+        for x in 0..w {
+            // Quantise to the nearest of {0, 255}; the boundary 128
+            // matches `encode_wbmp_from_threshold`'s "≥ 128 = white"
+            // convention so the two helpers agree on flat-grey input.
+            let (out_byte, out_value) = if cur[x] >= 128 {
+                (1u8, 255i16)
+            } else {
+                (0u8, 0i16)
+            };
+            // Pack the output bit MSB-first into byte (x / 8).
+            row_out[x >> 3] |= out_byte << (7 - (x & 7));
+
+            // Diffuse the residual to the four forward neighbours.
+            // The weights sum to 16, and we apply each multiplied-up
+            // numerator with a divide-by-16 — the `+ 8` rounds the
+            // signed division to nearest rather than toward zero, so
+            // the diffused error stays symmetric around 0 for any
+            // residual sign.
+            let err = cur[x] - out_value;
+            if err != 0 {
+                if x + 1 < w {
+                    cur[x + 1] = cur[x + 1].saturating_add(div_round_i16(err * 7, 16));
+                }
+                if y + 1 < h {
+                    if x > 0 {
+                        next[x - 1] = next[x - 1].saturating_add(div_round_i16(err * 3, 16));
+                    }
+                    next[x] = next[x].saturating_add(div_round_i16(err * 5, 16));
+                    if x + 1 < w {
+                        next[x + 1] = next[x + 1].saturating_add(div_round_i16(err, 16));
+                    }
+                }
+            }
+        }
+
+        // Advance to the next row: `next` becomes the new `cur` and
+        // is biased with the next input row's grayscale values; the
+        // old `cur` is reset to zeros for the row after that.
+        if y + 1 < h {
+            cur.clear();
+            let next_in = &gray[(y + 1) * w..(y + 2) * w];
+            cur.extend(next.iter().zip(next_in.iter()).map(|(&e, &g)| g as i16 + e));
+            for slot in next.iter_mut() {
+                *slot = 0;
+            }
+        }
+    }
+
+    encode_wbmp(width, height, &bits)
+}
+
+/// Round-half-to-nearest signed integer division by a small positive
+/// divisor. `div` must be > 0. Used by [`encode_wbmp_from_dither`] to
+/// distribute Floyd–Steinberg residuals symmetrically around zero.
+#[inline]
+fn div_round_i16(num: i16, div: i16) -> i16 {
+    debug_assert!(div > 0);
+    if num >= 0 {
+        (num + div / 2) / div
+    } else {
+        -(((-num) + div / 2) / div)
+    }
 }
 
 // --------------------------------------------------------------------
@@ -327,5 +464,102 @@ mod tests {
     fn threshold_helper_rejects_wrong_size() {
         let err = encode_wbmp_from_threshold(3, 1, &[0, 0], 128).unwrap_err();
         assert!(matches!(err, WbmpError::InvalidData(_)));
+    }
+
+    #[test]
+    fn dither_helper_pure_black_and_white_pass_through() {
+        // Saturated inputs have zero residual to diffuse, so dither
+        // and threshold-at-128 must agree byte-for-byte.
+        let gray = [255u8, 255, 255, 255, 0, 0, 0, 0];
+        let dith = encode_wbmp_from_dither(8, 1, &gray).unwrap();
+        let thr = encode_wbmp_from_threshold(8, 1, &gray, 128).unwrap();
+        assert_eq!(dith, thr);
+
+        let img = parse_wbmp(&dith).unwrap();
+        assert_eq!(img.planes[0].data, [0b1111_0000]);
+    }
+
+    #[test]
+    fn dither_helper_zero_dim_rejected() {
+        assert!(encode_wbmp_from_dither(0, 1, &[]).is_err());
+        assert!(encode_wbmp_from_dither(1, 0, &[]).is_err());
+    }
+
+    #[test]
+    fn dither_helper_rejects_wrong_size() {
+        let err = encode_wbmp_from_dither(3, 1, &[0, 0]).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)));
+    }
+
+    #[test]
+    fn dither_helper_preserves_average_on_flat_midtone() {
+        // A 32×32 flat patch of value 128 should quantise to roughly
+        // half white / half black under Floyd–Steinberg. With a hard
+        // threshold-at-128 it'd be 100% white; dither must do
+        // measurably better.
+        let w = 32u32;
+        let h = 32u32;
+        let gray = vec![128u8; (w * h) as usize];
+        let buf = encode_wbmp_from_dither(w, h, &gray).unwrap();
+        let img = parse_wbmp(&buf).unwrap();
+        let ones: u32 = img.planes[0].data.iter().map(|b| b.count_ones()).sum();
+        // 32×32 = 1024 bits. Average 128/255 ≈ 0.50196 ≈ 514 white
+        // bits would be perfect; allow a generous ±5% band to absorb
+        // boundary clamping at the row ends.
+        let total = w * h;
+        let lo = total * 45 / 100;
+        let hi = total * 55 / 100;
+        assert!(
+            (lo..=hi).contains(&ones),
+            "dither produced {ones} white bits of {total}; expected {lo}..={hi}"
+        );
+    }
+
+    #[test]
+    fn dither_helper_roundtrips_width_with_padding() {
+        // 11×3 — exercises the stride=2 padding-tail path the
+        // threshold helper also handles.
+        let gray = [
+            255u8, 200, 50, 0, 255, 200, 50, 0, 128, 64, 192, //
+            64, 200, 50, 255, 0, 50, 200, 64, 192, 128, 0, //
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let buf = encode_wbmp_from_dither(11, 3, &gray).unwrap();
+        let img = parse_wbmp(&buf).unwrap();
+        assert_eq!(img.width, 11);
+        assert_eq!(img.height, 3);
+        assert_eq!(img.planes[0].stride, 2);
+        // Padding bits in the last byte of every row must be zero
+        // (low 5 bits of each row's second byte).
+        for y in 0..3 {
+            let last = y * 2 + 1;
+            assert_eq!(
+                img.planes[0].data[last] & 0b0001_1111,
+                0,
+                "row {y} padding bits non-zero"
+            );
+        }
+    }
+
+    #[test]
+    fn dither_helper_horizontal_ramp_is_balanced() {
+        // 64-pixel left-to-right ramp from 0 to 255. Half above
+        // 128, half below before dithering; the diffused output
+        // should be close to half-and-half overall.
+        let w = 64u32;
+        let mut gray = Vec::with_capacity(w as usize);
+        for x in 0..w {
+            gray.push(((x * 255) / (w - 1)) as u8);
+        }
+        let buf = encode_wbmp_from_dither(w, 1, &gray).unwrap();
+        let img = parse_wbmp(&buf).unwrap();
+        let ones: u32 = img.planes[0].data.iter().map(|b| b.count_ones()).sum();
+        // Average grayscale of the ramp is ≈ 127.5 / 255 ≈ 50%; the
+        // 1-row pass has nowhere to diffuse vertically so a ±10%
+        // band absorbs the residual-at-EOL clamping.
+        assert!(
+            (24..=40).contains(&ones),
+            "ramp dithered to {ones} of 64 white bits"
+        );
     }
 }

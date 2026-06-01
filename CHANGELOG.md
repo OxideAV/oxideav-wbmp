@@ -7,6 +7,24 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Round-8 API surface: new `encode_wbmp_from_dither(width, height, gray)`
+  helper that runs a Floyd–Steinberg error-diffusion quantiser over an
+  8-bit grayscale input before packing the resulting 1-bit plane into
+  a Type-0 file. Photographic mid-tones now land as a stippled pattern
+  that preserves local average luminance rather than collapsing to a
+  flat region as the `encode_wbmp_from_threshold` cut-off does. The
+  implementation uses an i16 row-accumulator (O(width) extra space)
+  and the classic 7/16, 3/16, 5/16, 1/16 forward-neighbour weight
+  distribution; saturated 0/255 inputs diffuse zero residual, so
+  flat-monochrome input agrees byte-for-byte with
+  `encode_wbmp_from_threshold(.., 128)` and the two helpers stay
+  interchangeable on already-quantised data. Six new unit tests cover
+  the pass-through, zero-dim rejection, size-mismatch rejection,
+  flat-128 mid-tone balance (45–55% white bits on a 32×32 patch),
+  width-with-padding roundtrip (padding bits zero), and a 64-pixel
+  horizontal ramp landing within ±10% of half-and-half. Reference:
+  R. W. Floyd and L. Steinberg, "An adaptive algorithm for spatial
+  greyscale", *Proc. SID* 17/2 (1976), pp. 75–77.
 - Round-7 hardening: third `cargo-fuzz` target `threshold` exercising
   `encode_wbmp_from_threshold` end-to-end. The fuzzer drives small
   dimensions (1..=256 on each axis to stay under the default
