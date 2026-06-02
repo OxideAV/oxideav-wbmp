@@ -21,13 +21,19 @@
 //!     1-bit threshold path via `encode_wbmp_from_threshold`. This
 //!     exercises the per-pixel branch-and-set hot loop, which is the
 //!     only non-trivial work the encoder does.
+//!   - **encode_dither_320x240_gray8**: 320×240 grayscale → 1-bit
+//!     dither path via `encode_wbmp_from_dither`. Exercises the
+//!     stateful Floyd–Steinberg accumulator + per-row cur/next swap;
+//!     a useful A/B against the threshold scenario to track the
+//!     dither path's per-pixel cost regression-budget separately
+//!     from the branch-and-set hot loop.
 //!
 //! Run with:
 //!     cargo bench -p oxideav-wbmp --bench encode
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-use oxideav_wbmp::{encode_wbmp, encode_wbmp_from_threshold, WbmpImage};
+use oxideav_wbmp::{encode_wbmp, encode_wbmp_from_dither, encode_wbmp_from_threshold, WbmpImage};
 
 fn xorshift_byte(state: &mut u32) -> u8 {
     *state ^= *state << 13;
@@ -128,6 +134,19 @@ fn bench_encode_threshold_320x240_gray8(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_encode_dither_320x240_gray8(c: &mut Criterion) {
+    let gray = build_gray8(320, 240, 0x89ab_cdef);
+    let mut g = c.benchmark_group("encode_dither_320x240_gray8");
+    g.throughput(Throughput::Bytes(gray.len() as u64));
+    g.bench_function(BenchmarkId::from_parameter("dither/320x240"), |b| {
+        b.iter(|| {
+            encode_wbmp_from_dither(320, 240, criterion::black_box(&gray))
+                .expect("encode_from_dither")
+        });
+    });
+    g.finish();
+}
+
 criterion_group!(
     benches,
     bench_encode_8x8_solid,
@@ -136,5 +155,6 @@ criterion_group!(
     bench_encode_159x33_odd_width,
     bench_encode_1024x1024_padded,
     bench_encode_threshold_320x240_gray8,
+    bench_encode_dither_320x240_gray8,
 );
 criterion_main!(benches);

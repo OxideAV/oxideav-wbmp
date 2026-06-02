@@ -122,7 +122,7 @@ O(1) rather than chasing the input.
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
-in [`fuzz/`](fuzz/) with three libFuzzer targets:
+in [`fuzz/`](fuzz/) with four libFuzzer targets:
 
 * `decode` — feeds arbitrary bytes to `parse_wbmp`; the decoder must
   return a `Result` and never panic / abort / OOM. The classic overflow
@@ -143,8 +143,21 @@ in [`fuzz/`](fuzz/) with three libFuzzer targets:
   This covers the only public entry point with non-trivial per-pixel
   logic that the other two targets miss — the chunked-eight-pixels-
   per-output-byte main loop plus the 1..=7-pixel tail branch.
+* `dither` — synthesises an 8-bit grayscale plane from fuzz-controlled
+  small dimensions, runs `encode_wbmp_from_dither` (Floyd–Steinberg
+  error-diffusion), decodes the produced file, and asserts (a)
+  dimensions / stride survive the round trip, (b) the padding bits in
+  the last byte of every row are zero — the dither path writes its
+  output via `row_out[x >> 3] |= bit` and must never touch the padding
+  tail — and (c) the saturated-input agreement against
+  `encode_wbmp_from_threshold(.., 128)`: after clamping every input
+  sample to `{0, 255}` the two helpers must produce byte-identical
+  files, since saturated samples propagate zero residual. Covers the
+  only stateful per-pixel encoder path (i16 accumulator + per-row
+  cur/next swap with `saturating_add` clamping) — failure modes the
+  other three targets miss.
 
-All three build with `default-features = false`, so the harness
+All four build with `default-features = false`, so the harness
 exercises the framework-free standalone path and never links
 `oxideav-core`. Run:
 
@@ -152,6 +165,7 @@ exercises the framework-free standalone path and never links
 cargo +nightly fuzz run decode
 cargo +nightly fuzz run roundtrip
 cargo +nightly fuzz run threshold
+cargo +nightly fuzz run dither
 ```
 
 Round-1 sweep (~45 M `decode` + ~8 M `roundtrip` executions) found
@@ -161,7 +175,12 @@ allocation guards hold against adversarial headers. Round-7 added the
 no crashes, RSS bounded at ~471 MiB, libFuzzer coverage saturated at
 319 features / 1630 ft within the first ~5 s — the encode-side
 arithmetic and per-row indexing are panic-free across every reachable
-input shape the fuzzer explored.
+input shape the fuzzer explored. Round-9 added the `dither` target on
+the same pattern: 60-second smoke sweep, no crashes, RSS bounded under
+~500 MiB, the Floyd–Steinberg accumulator's `saturating_add` clamps
+hold across every reachable input shape the fuzzer explored and the
+saturated-input agreement against `encode_wbmp_from_threshold(.., 128)`
+holds byte-for-byte on every clamped-to-{0,255} probe.
 
 ## Benchmarks
 
@@ -172,8 +191,10 @@ handset), 320×240 (QVGA, 2-byte width MBI), 159×33 (odd-width padding-
 bit boundary), 1024×1024 (mid-size wallpaper) and 2048×2048
 (largest fixture still admitted by the default `WbmpLimits`
 8 MiB pixel cap). The `encode` bench also exercises
-`encode_wbmp_from_threshold` on a 320×240 grayscale fixture — the
-only per-pixel-branch hot loop in the encoder.
+`encode_wbmp_from_threshold` and `encode_wbmp_from_dither` on a
+320×240 grayscale fixture — the two per-pixel hot loops in the
+encoder, useful as an A/B for tracking the dither path's per-pixel
+cost separately from the threshold branch-and-set loop.
 
 Each scenario synthesises its fixture in-process from a deterministic
 xorshift32 source (no fixture files on disk) so the harness stays

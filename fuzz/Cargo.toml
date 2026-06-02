@@ -33,11 +33,20 @@ cargo-fuzz = true
 #                   are zero. Covers the `encode_wbmp_from_threshold`
 #                   hot loop — the only public entry point with non-
 #                   trivial per-pixel logic the other two targets miss.
+#  * `dither`     — synthesise an 8-bit grayscale plane from fuzz-
+#                   controlled dimensions, run it through
+#                   `encode_wbmp_from_dither` (Floyd–Steinberg error
+#                   diffusion), decode, and assert dimensions, stride,
+#                   per-row padding-bits-zero, plus the saturated-input
+#                   agreement against `encode_wbmp_from_threshold` at
+#                   threshold 128. Covers the only stateful per-pixel
+#                   encoder path (i16 accumulator + per-row cur/next
+#                   swap) — failure modes the other three targets miss.
 #
 # The crate is pulled in with `default-features = false` so the fuzz
 # build exercises the framework-free standalone `parse_wbmp` /
-# `encode_wbmp` / `encode_wbmp_from_threshold` path and never links
-# `oxideav-core`.
+# `encode_wbmp` / `encode_wbmp_from_threshold` / `encode_wbmp_from_dither`
+# path and never links `oxideav-core`.
 
 [dependencies]
 libfuzzer-sys = "0.4"
@@ -68,5 +77,11 @@ doc = false
 [[bin]]
 name = "threshold"
 path = "fuzz_targets/threshold.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "dither"
+path = "fuzz_targets/dither.rs"
 test = false
 doc = false

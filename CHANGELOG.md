@@ -7,6 +7,30 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Round-9 hardening: fourth `cargo-fuzz` target `dither` exercising
+  `encode_wbmp_from_dither` end-to-end. The fuzzer drives small
+  dimensions (1..=256 on each axis to stay under the default
+  `WbmpLimits`), synthesises a grayscale buffer cycled from the
+  remaining fuzz input, runs the dither encoder, decodes the result,
+  and asserts (a) dimensions / stride survive the round trip, (b) the
+  padding bits in the last byte of every row are zero regardless of
+  input grayscale values, and (c) the saturated-input agreement
+  against `encode_wbmp_from_threshold(.., 128)`: after clamping every
+  input sample to `{0, 255}` the two helpers produce byte-identical
+  files (saturated samples propagate zero residual under
+  Floyd–Steinberg, so the two helpers are documented to match on
+  pre-quantised input). Covers the only stateful per-pixel encoder
+  path — i16 accumulator, signed-divide rounding on the residual,
+  per-row `cur`/`next` buffer swap with `saturating_add` clamping —
+  that the existing `threshold` target's stateless branch-and-set
+  loop doesn't reach. Builds with `default-features = false` (no
+  `oxideav-core` link), same shape as the other three targets.
+- Round-9 depth-mode: companion Criterion benchmark
+  `encode_dither_320x240_gray8` in `benches/encode.rs` covering the
+  Floyd–Steinberg path on the same 320×240 Gray8 fixture the
+  `encode_threshold_320x240_gray8` bench uses, so future encoder
+  changes can A/B the dither cost against the threshold cost
+  separately rather than as a single aggregate per-pixel number.
 - Round-8 API surface: new `encode_wbmp_from_dither(width, height, gray)`
   helper that runs a Floyd–Steinberg error-diffusion quantiser over an
   8-bit grayscale input before packing the resulting 1-bit plane into
