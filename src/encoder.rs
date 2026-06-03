@@ -210,6 +210,15 @@ pub fn encode_wbmp_from_dither(width: u32, height: u32, gray: &[u8]) -> Result<V
     for y in 0..h {
         let row_out = &mut bits[y * stride..(y + 1) * stride];
 
+        // Pack output bits into a u8 accumulator, flushing once per
+        // 8 pixels rather than doing a read-modify-write store on
+        // every pixel. The bit positions never collide (each pixel
+        // sets exactly bit `7 - (x & 7)` of byte `x >> 3`), so this
+        // produces a byte-identical plane to the per-pixel `|=` form.
+        // r225 depth-mode: 1-store-per-8-pixels in the dither path,
+        // matching the chunked-eight pack the threshold path already
+        // uses.
+        let mut acc: u8 = 0;
         for x in 0..w {
             // Quantise to the nearest of {0, 255}; the boundary 128
             // matches `encode_wbmp_from_threshold`'s "≥ 128 = white"
@@ -219,8 +228,13 @@ pub fn encode_wbmp_from_dither(width: u32, height: u32, gray: &[u8]) -> Result<V
             } else {
                 (0u8, 0i16)
             };
-            // Pack the output bit MSB-first into byte (x / 8).
-            row_out[x >> 3] |= out_byte << (7 - (x & 7));
+            // Accumulate the output bit MSB-first; flush at byte
+            // boundaries.
+            acc |= out_byte << (7 - (x & 7));
+            if (x & 7) == 7 {
+                row_out[x >> 3] = acc;
+                acc = 0;
+            }
 
             // Diffuse the residual to the four forward neighbours.
             // The weights sum to 16, and we apply each multiplied-up
@@ -243,6 +257,12 @@ pub fn encode_wbmp_from_dither(width: u32, height: u32, gray: &[u8]) -> Result<V
                     }
                 }
             }
+        }
+        // Flush any partial trailing byte (`width % 8 != 0`). Unused
+        // low bits of `acc` stay zero by construction, matching the
+        // WBMP padding convention.
+        if (w & 7) != 0 {
+            row_out[w >> 3] = acc;
         }
 
         // Advance to the next row: `next` becomes the new `cur` and
@@ -539,6 +559,37 @@ mod tests {
                 "row {y} padding bits non-zero"
             );
         }
+    }
+
+    #[test]
+    fn dither_helper_full_byte_plus_tail_bits() {
+        // 11×1 grayscale: a saturated checkerboard 255/0/255/.../255.
+        // Saturated inputs propagate zero residual under
+        // Floyd-Steinberg, so the dither output must equal what a
+        // bit-by-bit reference (set bit `7 - (x % 8)` of byte `x / 8`
+        // when gray[x] >= 128) produces. This locks the r225
+        // accumulator-flush pack against any future change that
+        // accidentally drops a bit on the byte boundary or leaves
+        // padding bits non-zero.
+        let gray = [255u8, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255];
+        let buf = encode_wbmp_from_dither(11, 1, &gray).unwrap();
+        let img = parse_wbmp(&buf).unwrap();
+        // Expected pack: bits 1,0,1,0,1,0,1,0 (byte 0) + 1,0,1 in
+        // bits 7,6,5 of byte 1 (padding bits 4..0 are zero).
+        assert_eq!(img.planes[0].stride, 2);
+        assert_eq!(img.planes[0].data, [0b1010_1010, 0b1010_0000]);
+    }
+
+    #[test]
+    fn dither_helper_byte_boundary_padding_stays_zero() {
+        // 9×1 grayscale: one full byte (bits 7..0) + one tail bit in
+        // bit 7 of byte 1. The remaining low 7 bits of byte 1 are
+        // padding and must be zero.
+        let gray = [255u8; 9];
+        let buf = encode_wbmp_from_dither(9, 1, &gray).unwrap();
+        let img = parse_wbmp(&buf).unwrap();
+        assert_eq!(img.planes[0].stride, 2);
+        assert_eq!(img.planes[0].data, [0b1111_1111, 0b1000_0000]);
     }
 
     #[test]

@@ -6,6 +6,29 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Round-10 perf: `encode_wbmp_from_dither`'s per-row inner loop now
+  accumulates the eight output bits of each byte into a `u8` register
+  and stores once per byte rather than doing a read-modify-write
+  `row_out[x >> 3] |= bit << shift` on every pixel. The bit positions
+  never collide (each pixel writes exactly bit `7 - (x & 7)` of byte
+  `x >> 3`), so the change produces a byte-identical plane to the
+  previous form. A partial-byte flush handles the `width % 8 != 0`
+  tail, with the unused low bits left zero by construction (matching
+  the WBMP padding convention). Two new dedicated unit tests pin the
+  exact output bytes: `dither_helper_full_byte_plus_tail_bits` exercises
+  an 11×1 saturated checkerboard (one full byte plus three tail bits)
+  and `dither_helper_byte_boundary_padding_stays_zero` exercises a 9×1
+  saturated-white input that lands one bit in byte 1 and seven zero
+  padding bits after it. Measured speedup at `encode_wbmp_from_dither`
+  on the 320×240 Gray8 Criterion bench: ~525 µs → ~514 µs (~2.0%
+  Criterion-reported `p < 0.05`, ~140 → ~142 MiB/s) on Apple M1 Pro
+  release single-core. The structural alignment with
+  `encode_wbmp_from_threshold`'s chunked-eight pack matters more than
+  the headline number: future changes to either encoder hot loop can
+  now be compared at the same per-byte-store granularity rather than
+  one chunked + one read-modify-write.
+
 ### Added
 - Round-9 hardening: fourth `cargo-fuzz` target `dither` exercising
   `encode_wbmp_from_dither` end-to-end. The fuzzer drives small

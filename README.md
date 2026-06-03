@@ -213,7 +213,14 @@ roundtrip at 22 GiB/s on 1024×1024. Round-5 pushed the
 `encode_wbmp_from_threshold` path to ~10 GiB/s on the 320×240 Gray8
 fixture by replacing the per-pixel `|= 1 << k` read-modify-write loop
 with a packed eight-comparisons-per-output-byte loop that lets the
-codegen unroll the inner step cleanly.
+codegen unroll the inner step cleanly. Round-10 applied the same
+accumulator-flush pattern to `encode_wbmp_from_dither`'s per-row inner
+loop (~140 → ~142 MiB/s on the same 320×240 fixture; the dither path
+is dominated by the inherently-sequential Floyd–Steinberg residual
+diffusion, so the headline number stays an order of magnitude below
+the threshold path, but the structural alignment removes one
+read-modify-write per pixel and matches the threshold path's
+per-byte-store granularity).
 
 ## Round 1 deferrals
 
