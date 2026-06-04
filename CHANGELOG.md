@@ -6,6 +6,32 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Round-11 hardening: fifth `cargo-fuzz` target `polarity` exercising
+  `parse_wbmp_as(MonoBlack)` end-to-end. The fuzzer synthesises a
+  canonical (trailing-padding-bit-pre-masked) `MonoWhite` plane from
+  fuzz-controlled small dimensions (1..=256 on each axis to stay under
+  the default `WbmpLimits`) plus a fuzz-controlled body, encodes it,
+  decodes it twice — once verbatim via `parse_wbmp` and once
+  polarity-flipped via `parse_wbmp_as(MonoBlack)` — and asserts (a)
+  the verbatim decode matches the input plane byte-for-byte, (b) the
+  polarity-flipped plane equals the inverted-and-padding-masked
+  reference computed from the input plane, and (c) the trailing
+  padding bits in the last byte of every row of the `MonoBlack` plane
+  are zero regardless of the input pattern. Covers the in-place bit-
+  inversion + per-row trailing-padding-bit re-zero logic in
+  `parse_wbmp_as` — the only entry point with non-trivial per-byte
+  mutation logic that the existing four targets (`decode`,
+  `roundtrip`, `threshold`, `dither`) don't reach. Failure modes the
+  new target catches: off-by-one in per-row "last byte of the row"
+  indexing during the in-place padding mask, skipping the mask when
+  `pad_bits == 0` (full-byte width), conditional-mask boundary errors
+  when `pad_bits` is 1 or 7. Initial 60-second sweep on Apple M1 Pro:
+  8.3 M executions, no crashes, RSS bounded at ~443 MiB, libFuzzer
+  feature coverage saturated at 195 features / 510 ft inside the first
+  ~5 s. Builds with `default-features = false` (no `oxideav-core`
+  link), same shape as the other four targets.
+
 ### Changed
 - Round-10 perf: `encode_wbmp_from_dither`'s per-row inner loop now
   accumulates the eight output bits of each byte into a `u8` register

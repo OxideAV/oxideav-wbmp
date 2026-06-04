@@ -122,7 +122,7 @@ O(1) rather than chasing the input.
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
-in [`fuzz/`](fuzz/) with four libFuzzer targets:
+in [`fuzz/`](fuzz/) with five libFuzzer targets:
 
 * `decode` — feeds arbitrary bytes to `parse_wbmp`; the decoder must
   return a `Result` and never panic / abort / OOM. The classic overflow
@@ -156,8 +156,24 @@ in [`fuzz/`](fuzz/) with four libFuzzer targets:
   only stateful per-pixel encoder path (i16 accumulator + per-row
   cur/next swap with `saturating_add` clamping) — failure modes the
   other three targets miss.
+* `polarity` — synthesises a canonical (padding-bit-masked) `MonoWhite`
+  plane from fuzz-controlled small dimensions, encodes it, decodes it
+  twice (once verbatim via `parse_wbmp`, once polarity-flipped via
+  `parse_wbmp_as(MonoBlack)`), and asserts (a) the verbatim decode
+  matches the input plane byte-for-byte, (b) the polarity-flipped
+  plane equals the inverted-and-padding-masked reference computed from
+  the input plane, and (c) the trailing padding bits in the last byte
+  of every row of the `MonoBlack` plane are zero. Covers the in-place
+  bit-inversion + per-row trailing-padding-bit re-zero logic in
+  `parse_wbmp_as` — the only entry point with non-trivial per-byte
+  mutation logic that the other four targets don't reach. The
+  failure modes it catches that the others would miss are off-by-one
+  errors in the per-row "last byte of the row" indexing during the
+  in-place padding mask, skipping the mask when `pad_bits == 0`
+  (full-byte width), and conditional-mask boundary errors when
+  `pad_bits` is 1 or 7.
 
-All four build with `default-features = false`, so the harness
+All five build with `default-features = false`, so the harness
 exercises the framework-free standalone path and never links
 `oxideav-core`. Run:
 
@@ -166,6 +182,7 @@ cargo +nightly fuzz run decode
 cargo +nightly fuzz run roundtrip
 cargo +nightly fuzz run threshold
 cargo +nightly fuzz run dither
+cargo +nightly fuzz run polarity
 ```
 
 Round-1 sweep (~45 M `decode` + ~8 M `roundtrip` executions) found
@@ -180,7 +197,16 @@ the same pattern: 60-second smoke sweep, no crashes, RSS bounded under
 ~500 MiB, the Floyd–Steinberg accumulator's `saturating_add` clamps
 hold across every reachable input shape the fuzzer explored and the
 saturated-input agreement against `encode_wbmp_from_threshold(.., 128)`
-holds byte-for-byte on every clamped-to-{0,255} probe.
+holds byte-for-byte on every clamped-to-{0,255} probe. Round-11 added
+the `polarity` target on the same pattern: 60-second smoke sweep,
+8.3 M executions, no crashes, RSS bounded at ~443 MiB, libFuzzer
+feature coverage saturated at 195 features / 510 ft inside the first
+~5 s — the in-place bit-inversion + per-row padding-mask in
+`parse_wbmp_as(MonoBlack)` produces byte-identical planes against the
+inverted-and-masked reference across every reachable
+(width, height, body-bytes) shape the fuzzer explored, and the
+per-row padding tail of the polarity-flipped plane stays zero
+regardless of input pattern.
 
 ## Benchmarks
 
