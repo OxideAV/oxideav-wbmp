@@ -36,6 +36,23 @@ truncation.
 Other Type values raise `WbmpError::Unsupported`. None ever shipped
 in public WAP profiles.
 
+## Lax vs strict header conformance
+
+`parse_wbmp` (lax) accepts any value for the one-byte `FixedHeader`
+field — the spec text leaves the byte unused in Type 0 but mandatory
+in the wire format, and treating it as opaque keeps the decoder
+forward-compatible with hypothetical Type-0 extensions. Callers that
+need wire-format conformance instead — reject anything whose
+`FixedHeader` is not the spec-mandated `0x00` — reach for
+`parse_wbmp_strict` (and `parse_wbmp_strict_with_limits` for the
+explicit-limits variant). The strict path errors out as
+`WbmpError::InvalidData` with a message naming the offending byte;
+all other checks (Type-field, zero-dimension, MBI bounds, limits,
+truncation) are identical to the lax path. The header-level entry
+points `parse_header` / `parse_header_strict` expose the same split
+for callers that want to inspect the four-field header without
+touching the pixel plane.
+
 `parse_wbmp` (and `parse_wbmp_with_limits`) emit the on-disk
 polarity unchanged — `WbmpPixelFormat::MonoWhite`, where bit `1` is
 white. Callers that want the inverted polarity for downstream

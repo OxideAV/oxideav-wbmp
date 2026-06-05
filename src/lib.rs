@@ -29,6 +29,10 @@
 //! Standalone (always available):
 //! * [`parse_wbmp`] — bytes → [`WbmpImage`] in the on-disk polarity
 //!   ([`WbmpPixelFormat::MonoWhite`]).
+//! * [`parse_wbmp_strict`] — strict variant of [`parse_wbmp`] that
+//!   additionally requires the wire-format `FixedHeader` byte to be
+//!   the spec-mandated `0x00`; the lax parser accepts any byte there
+//!   for forward-compat.
 //! * [`parse_wbmp_as`] — bytes → [`WbmpImage`] in the caller's
 //!   chosen polarity ([`WbmpPixelFormat::MonoWhite`] or
 //!   [`WbmpPixelFormat::MonoBlack`]); the polarity flip happens
@@ -78,10 +82,13 @@ pub mod registry;
 /// Codec id for WBMP image frames.
 pub const CODEC_ID_STR: &str = "wbmp";
 
-pub use decoder::{parse_wbmp, parse_wbmp_as, parse_wbmp_as_with_limits, parse_wbmp_with_limits};
+pub use decoder::{
+    parse_wbmp, parse_wbmp_as, parse_wbmp_as_with_limits, parse_wbmp_strict,
+    parse_wbmp_strict_with_limits, parse_wbmp_with_limits,
+};
 pub use encoder::{encode_wbmp, encode_wbmp_from_dither, encode_wbmp_from_threshold};
 pub use error::{Result, WbmpError};
-pub use header::{parse_header, write_header, Header};
+pub use header::{parse_header, parse_header_strict, write_header, Header};
 pub use image::{WbmpImage, WbmpPixelFormat, WbmpPlane};
 pub use limits::WbmpLimits;
 pub use mbi::{mbi_u32_len, read_mbi_u32, write_mbi_u32, MAX_MBI_BYTES, MAX_U32_MBI_BYTES};

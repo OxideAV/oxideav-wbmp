@@ -7,6 +7,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Round-12 API surface: strict header-conformance entry points
+  `parse_wbmp_strict` / `parse_wbmp_strict_with_limits` (high-level)
+  and `parse_header_strict` (low-level). The strict variants require
+  the wire-format `FixedHeader` byte to be the spec-mandated `0x00`;
+  the lax `parse_wbmp` / `parse_header` continue to accept any value
+  for forward-compatibility with hypothetical Type-0 extensions. A
+  non-conformant byte raises `WbmpError::InvalidData` with a message
+  naming the offending byte and the mode (e.g. `"FixedHeader byte =
+  0xFF, strict mode requires 0x00"`). All other rejection paths
+  (Type-field, zero-dimension, MBI bounds, limits, truncation) match
+  the lax decoder exactly — strict is an ADDITIONAL check, not a
+  replacement, and limits checks still fire on dimensions that pass
+  the strict FixedHeader test. Seven new unit tests cover the
+  conformant-passes parity, the FixedHeader-rejection branch (full
+  byte, high-bit-only), the strict-orderings against limits / Type /
+  zero-dim / truncation, and the `parse_header_strict` vs
+  `parse_wbmp_strict` API symmetry. No wire-format changes.
 - Round-11 hardening: fifth `cargo-fuzz` target `polarity` exercising
   `parse_wbmp_as(MonoBlack)` end-to-end. The fuzzer synthesises a
   canonical (trailing-padding-bit-pre-masked) `MonoWhite` plane from

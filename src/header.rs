@@ -42,10 +42,34 @@ pub struct Header {
 /// Parse the four header fields. Returns the [`Header`] on success
 /// and the byte offset at which pixel data begins.
 ///
+/// This is the **lax** parser: the `FixedHeader` byte is accepted at
+/// any value (the spec text says it is presently unused in Type 0,
+/// but the byte is mandatory). For callers that want a strict
+/// conformance check — refusing any input whose `FixedHeader` byte is
+/// not the spec-mandated `0x00` — see [`parse_header_strict`].
+///
 /// Errors:
 /// * [`WbmpError::Unsupported`] if the Type field is non-zero.
 /// * [`WbmpError::InvalidData`] for truncated or oversized MBIs.
 pub fn parse_header(bytes: &[u8]) -> Result<Header> {
+    parse_header_inner(bytes, false)
+}
+
+/// Strict variant of [`parse_header`]. Identical except the
+/// `FixedHeader` byte is required to be exactly `0x00` — the value
+/// WAP-237 §8 fixes for the only defined Type (0, B/W bitmap). Any
+/// other value raises [`WbmpError::InvalidData`].
+///
+/// Use this entry point when the caller needs to reject malformed /
+/// non-conformant Type-0 files at the wire-format level rather than
+/// silently accept a byte the spec does not currently assign meaning
+/// to. The lax [`parse_header`] is forward-compatible with
+/// hypothetical Type-0 extensions; this one is not.
+pub fn parse_header_strict(bytes: &[u8]) -> Result<Header> {
+    parse_header_inner(bytes, true)
+}
+
+fn parse_header_inner(bytes: &[u8], strict: bool) -> Result<Header> {
     let mut offset = 0usize;
 
     // Field 1: Type (MBI). Type 0 only.
@@ -56,13 +80,17 @@ pub fn parse_header(bytes: &[u8]) -> Result<Header> {
         )));
     }
 
-    // Field 2: FixedHeader. Exactly one byte. We accept any value
-    // here for Type 0 — the WAP-237 spec text is "Type 0 currently
-    // does not use the FixedHeader field" but the byte is still
-    // mandatory in the wire format. Treating it as opaque keeps us
-    // forward-compatible with hypothetical Type-0 extensions.
+    // Field 2: FixedHeader. Exactly one byte. The lax path accepts any
+    // value (forward-compat with hypothetical Type-0 extensions); the
+    // strict path requires the spec-mandated 0x00.
     if offset >= bytes.len() {
         return Err(WbmpError::invalid("WBMP: header truncated at FixedHeader"));
+    }
+    let fixed_header = bytes[offset];
+    if strict && fixed_header != 0x00 {
+        return Err(WbmpError::invalid(format!(
+            "WBMP: FixedHeader byte = 0x{fixed_header:02X}, strict mode requires 0x00"
+        )));
     }
     offset += 1;
 
@@ -153,5 +181,85 @@ mod tests {
         assert_eq!(header.width, 1);
         assert_eq!(header.height, 1);
         assert_eq!(header.data_offset, 4);
+    }
+
+    #[test]
+    fn strict_accepts_zero_fixed_header() {
+        // The strict parser must still accept conformant Type-0
+        // headers (FixedHeader = 0x00) and produce the same result as
+        // the lax parser.
+        let mut buf = Vec::new();
+        write_header(96, 64, &mut buf);
+        assert_eq!(buf, [0x00, 0x00, 0x60, 0x40]);
+        let lax = parse_header(&buf).unwrap();
+        let strict = parse_header_strict(&buf).unwrap();
+        assert_eq!(lax, strict);
+        assert_eq!(strict.width, 96);
+        assert_eq!(strict.height, 64);
+        assert_eq!(strict.data_offset, buf.len());
+    }
+
+    #[test]
+    fn strict_rejects_nonzero_fixed_header_byte() {
+        // The lax parser accepts FixedHeader = 0xFF (see
+        // accepts_arbitrary_fixed_header_byte). The strict parser must
+        // reject it as InvalidData — the spec fixes the byte at 0x00
+        // for Type 0.
+        let buf = [0x00u8, 0xFF, 0x01, 0x01];
+        // Lax: still accepted.
+        assert!(parse_header(&buf).is_ok());
+        // Strict: rejected.
+        let err = parse_header_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+        if let WbmpError::InvalidData(msg) = &err {
+            assert!(
+                msg.contains("0xFF") && msg.contains("strict"),
+                "message should name the offending byte and the mode: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_rejects_high_bit_only_fixed_header() {
+        // The high bit of FixedHeader is reserved in the spec text as
+        // the "Ext Headers" indicator (no normative encoding ever
+        // published). A header carrying just that bit must still be
+        // rejected by the strict parser.
+        let buf = [0x00u8, 0x80, 0x01, 0x01];
+        let err = parse_header_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn strict_still_rejects_nonzero_type() {
+        // Non-zero Type field must surface as Unsupported in both
+        // parsers — the strict mode tightens the FixedHeader check,
+        // not the Type check.
+        let buf = [0x01u8, 0x00, 0x10, 0x10];
+        let err = parse_header_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::Unsupported(_)), "{err:?}");
+    }
+
+    #[test]
+    fn strict_still_rejects_zero_dimension() {
+        // Zero width/height must still be InvalidData in strict mode.
+        let buf = [0x00u8, 0x00, 0x00, 0x01];
+        let err = parse_header_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn strict_still_rejects_truncated_at_fixed_header() {
+        // Truncation before the FixedHeader byte must still surface as
+        // InvalidData (truncation), not as a strict-mode rejection
+        // (since the byte isn't present).
+        let buf = [0x00u8];
+        let err = parse_header_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+        if let WbmpError::InvalidData(msg) = &err {
+            // The truncation message — not the strict-mode rejection
+            // message — should fire.
+            assert!(msg.contains("truncated"), "{msg}");
+        }
     }
 }

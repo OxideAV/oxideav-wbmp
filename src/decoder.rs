@@ -9,7 +9,7 @@
 //! impl wraps [`parse_wbmp`] for the `oxideav_core::Decoder` surface.
 
 use crate::error::{Result, WbmpError};
-use crate::header::parse_header;
+use crate::header::{parse_header, parse_header_strict};
 use crate::image::{WbmpImage, WbmpPixelFormat, WbmpPlane};
 use crate::limits::WbmpLimits;
 
@@ -117,7 +117,36 @@ pub fn parse_wbmp(input: &[u8]) -> Result<WbmpImage> {
 /// decoder should allocate whatever the header asks for; otherwise
 /// keep the defaults or tighten them further for your environment.
 pub fn parse_wbmp_with_limits(input: &[u8], limits: &WbmpLimits) -> Result<WbmpImage> {
-    let header = parse_header(input)?;
+    parse_wbmp_inner(input, limits, false)
+}
+
+/// Strict variant of [`parse_wbmp`]. Identical except the header is
+/// parsed with [`parse_header_strict`] — the `FixedHeader` byte is
+/// required to be exactly `0x00`. Any other value raises
+/// [`WbmpError::InvalidData`].
+///
+/// Use this entry point when the caller wants to reject malformed /
+/// non-conformant Type-0 files at the wire-format level rather than
+/// silently accept a byte the spec does not currently assign meaning
+/// to. The lax [`parse_wbmp`] is forward-compatible with hypothetical
+/// Type-0 extensions; this one is not.
+pub fn parse_wbmp_strict(input: &[u8]) -> Result<WbmpImage> {
+    parse_wbmp_strict_with_limits(input, &WbmpLimits::default())
+}
+
+/// Strict variant of [`parse_wbmp_with_limits`]. Same strict
+/// `FixedHeader == 0x00` enforcement as [`parse_wbmp_strict`],
+/// combined with caller-supplied [`WbmpLimits`].
+pub fn parse_wbmp_strict_with_limits(input: &[u8], limits: &WbmpLimits) -> Result<WbmpImage> {
+    parse_wbmp_inner(input, limits, true)
+}
+
+fn parse_wbmp_inner(input: &[u8], limits: &WbmpLimits, strict: bool) -> Result<WbmpImage> {
+    let header = if strict {
+        parse_header_strict(input)?
+    } else {
+        parse_header(input)?
+    };
 
     if header.width > limits.max_width {
         return Err(WbmpError::limit_exceeded(format!(
@@ -537,6 +566,81 @@ mod tests {
         let b = parse_wbmp_as_with_limits(&buf, WbmpPixelFormat::MonoBlack, &lim).unwrap();
         assert_eq!(w.planes[0].data, vec![0xFFu8; 2500]);
         assert_eq!(b.planes[0].data, vec![0x00u8; 2500]);
+    }
+
+    // --- Strict-mode reject path (FixedHeader == 0x00 required). ---
+
+    #[test]
+    fn parse_wbmp_strict_matches_lax_on_conformant_input() {
+        // Well-formed Type-0 file (FixedHeader = 0x00): the strict and
+        // lax entry points must produce byte-for-byte identical
+        // results.
+        let mut buf = Vec::new();
+        write_header(11, 2, &mut buf);
+        let body = [0xAC, 0xE0, 0x53, 0x00];
+        buf.extend_from_slice(&body);
+        let lax = parse_wbmp(&buf).unwrap();
+        let strict = parse_wbmp_strict(&buf).unwrap();
+        assert_eq!(lax.width, strict.width);
+        assert_eq!(lax.height, strict.height);
+        assert_eq!(lax.pixel_format, strict.pixel_format);
+        assert_eq!(lax.planes[0].stride, strict.planes[0].stride);
+        assert_eq!(lax.planes[0].data, strict.planes[0].data);
+    }
+
+    #[test]
+    fn parse_wbmp_strict_rejects_nonzero_fixed_header() {
+        // Same bytes as parse_padded_row but with FixedHeader = 0xFF.
+        // The lax parser still accepts it (forward-compat); the strict
+        // parser must error out as InvalidData.
+        let buf = [
+            0x00u8, // Type = 0
+            0xFF,   // FixedHeader = 0xFF (non-conformant)
+            0x0B,   // Width = 11
+            0x01,   // Height = 1
+            0xAC, 0xE0, // 11 pixels packed (5 bits padding)
+        ];
+        assert!(parse_wbmp(&buf).is_ok(), "lax parser still accepts");
+        let err = parse_wbmp_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_wbmp_strict_with_limits_enforces_both() {
+        // FixedHeader violation fires first (before the limit check)
+        // when the file is also out of bounds — the strict header path
+        // runs before allocation.
+        let buf = [
+            0x00u8, 0x01, // FixedHeader = 0x01 — strict rejects
+            0x82, 0x80, 0x00, // Width = 32768 (would also be over the default cap)
+            0x01, // Height = 1
+        ];
+        let err = parse_wbmp_strict_with_limits(&buf, &WbmpLimits::default()).unwrap_err();
+        // We promise InvalidData here, not LimitExceeded — strict mode
+        // wants to surface the FixedHeader violation as soon as it
+        // sees it, before the limit machinery.
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_wbmp_strict_still_enforces_limits_on_conformant_header() {
+        // FixedHeader = 0x00 (conformant) but dimensions blow the
+        // default limit. Strict mode must still return LimitExceeded
+        // — strict is an ADDITIONAL check, not a replacement.
+        let mut buf = Vec::new();
+        write_header(32_000, 1, &mut buf);
+        let err = parse_wbmp_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::LimitExceeded(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_wbmp_strict_still_rejects_nonzero_type() {
+        // Non-zero Type field must surface as Unsupported in both
+        // parsers; strict mode tightens the FixedHeader check, not the
+        // Type check.
+        let buf = [0x01u8, 0x00, 0x08, 0x08];
+        let err = parse_wbmp_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::Unsupported(_)), "{err:?}");
     }
 
     #[test]
