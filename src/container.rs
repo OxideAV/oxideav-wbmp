@@ -33,7 +33,7 @@ pub fn register(reg: &mut ContainerRegistry) {
 /// only return a low score for content that *parses* as a valid Type-0
 /// header. This avoids stealing probe wins from other formats whose
 /// payload happens to start with a few null bytes.
-fn probe(data: &ProbeData) -> ProbeScore {
+pub fn probe(data: &ProbeData) -> ProbeScore {
     if matches!(data.ext, Some("wbmp")) {
         return PROBE_SCORE_EXTENSION;
     }

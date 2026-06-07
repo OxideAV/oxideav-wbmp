@@ -7,6 +7,44 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Round-13 coverage: twenty new integration tests in
+  `tests/round13_registry_traits.rs` exercising the framework trait
+  surface end-to-end — the `Decoder` / `Encoder` / `Demuxer` / `Muxer`
+  paths that previous rounds covered only by `cargo build`'s type-check.
+  The standalone-API integration tests in `tests/roundtrip.rs` drove
+  the framework-free `parse_wbmp` / `encode_wbmp[_from_*]` entry
+  points only; the `#[cfg(feature = "registry")]` paths in
+  `src/decoder.rs`, `src/encoder.rs`, `src/container.rs` and
+  `src/registry.rs` had no runtime coverage. Round 13 plugs that gap
+  across five focused groups: (1) `register_codecs` capability shape
+  asserting `MonoWhite` / `MonoBlack` / `Gray8` are all advertised
+  with `intra_only = true` and `lossless = true`; (2) `WbmpDecoder`
+  `send_packet` → `receive_frame` round-trips in both `MonoWhite`
+  (verbatim) and `MonoBlack` (in-place inverted + padding-masked)
+  polarities, including the `NeedMore` / `Eof` state machine and the
+  `WbmpError` → `oxideav_core::Error` conversion path; (3)
+  `WbmpEncoder` `send_frame` → `receive_packet` for `MonoWhite`,
+  `MonoBlack` (with padding re-zeroed on disk) and `Gray8`
+  (thresholded at 128), plus the `NeedMore` / `Eof` semantics and the
+  unsupported-format / missing-pixel-format rejection branches; (4)
+  the `container::probe` function — full `PROBE_SCORE_EXTENSION` on
+  matching `.wbmp` hints, `PROBE_SCORE_EXTENSION / 2` on conformant
+  content sniffs without hints, zero on obvious non-WBMP buffers
+  (JPEG SOI) and on buffers shorter than the 5-byte minimum the
+  probe demands; (5) `ContainerRegistry::open_demuxer` /
+  `open_muxer` end-to-end — demuxing a real Type-0 file emits the
+  expected single packet with `pts = Some(0)` and `keyframe = true`,
+  the streams metadata advertises `MediaType::Video` + the on-disk
+  `PixelFormat::MonoWhite`, garbage input surfaces as a clean
+  `InvalidData` / `Unsupported` error, and the muxer rejects both
+  audio streams and multi-stream inputs as documented. Tests gated
+  behind `#[cfg(feature = "registry")]` so the standalone build
+  (`--no-default-features --lib`) is unaffected; 94 tests total now
+  pass (63 unit + 11 standalone integration + 20 trait-surface
+  integration). `container::probe` promoted from private to `pub`
+  to make it callable from integration tests without going through
+  the `ContainerRegistry::probe_input` machinery; the function shape
+  and behaviour are unchanged.
 - Round-12 API surface: strict header-conformance entry points
   `parse_wbmp_strict` / `parse_wbmp_strict_with_limits` (high-level)
   and `parse_header_strict` (low-level). The strict variants require

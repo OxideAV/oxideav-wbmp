@@ -265,6 +265,28 @@ the threshold path, but the structural alignment removes one
 read-modify-write per pixel and matches the threshold path's
 per-byte-store granularity).
 
+## Framework trait surface
+
+The default-on `registry` feature exposes the codec / container behind
+`oxideav-core`'s `Decoder`, `Encoder`, `Demuxer` and `Muxer` traits.
+[`tests/round13_registry_traits.rs`](tests/round13_registry_traits.rs)
+covers that surface end-to-end: round-trips a `MonoWhite` plane
+through `WbmpDecoder::send_packet` → `receive_frame`; routes the same
+plane back through `WbmpEncoder::send_frame` → `receive_packet`;
+asserts the `MonoBlack` polarity path performs the in-place inversion
++ per-row padding-mask documented in the encoder source; checks
+`Gray8` thresholds at 128 by default through the framework path;
+exercises the `NeedMore` / `Eof` semantics on both directions; calls
+`probe` directly with conformant, garbage and extension-only inputs;
+opens a `WbmpDemuxer` / `WbmpMuxer` pair via
+`ContainerRegistry::open_demuxer` / `open_muxer` and round-trips the
+single-packet container; confirms the muxer rejects audio and
+multi-stream inputs; and walks `register_codecs` to assert
+`CodecCapabilities` advertises `MonoWhite`, `MonoBlack` and `Gray8`
+as accepted pixel formats with `intra_only` + `lossless` set. Twenty
+new integration tests, all framework-only — the standalone build
+(`--no-default-features`) skips them as expected.
+
 ## Round 1 deferrals
 
 * WBMP Type values other than `0`. Later WAP releases reserved Type 1+
