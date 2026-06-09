@@ -89,7 +89,7 @@ pub use decoder::{
 pub use encoder::{encode_wbmp, encode_wbmp_from_dither, encode_wbmp_from_threshold};
 pub use error::{Result, WbmpError};
 pub use header::{parse_header, parse_header_strict, write_header, Header};
-pub use image::{WbmpImage, WbmpPixelFormat, WbmpPlane};
+pub use image::{PlaneLayout, WbmpImage, WbmpPixelFormat, WbmpPlane};
 pub use limits::WbmpLimits;
 pub use mbi::{mbi_u32_len, read_mbi_u32, write_mbi_u32, MAX_MBI_BYTES, MAX_U32_MBI_BYTES};
 

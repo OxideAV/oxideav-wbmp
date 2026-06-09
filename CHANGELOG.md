@@ -7,6 +7,26 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Typed primitive `PlaneLayout` in `src/image.rs` capturing the
+  byte-level layout of a single packed mono plane: `width`, `height`,
+  `stride` (= `ceil(width / 8)`), `total_bytes` (= `stride * height`,
+  with `checked_mul` for usize-overflow safety on 32-bit targets), and
+  `last_byte_pad_mask` (= `0xFF` for byte-aligned widths,
+  `0xFF << (8 * stride - width)` otherwise). Constructed once via
+  `PlaneLayout::new(width, height)` and consumed by four call sites
+  that previously each rederived the same three quantities — the lax /
+  strict header decoder path (`decoder::parse_wbmp_inner`), the
+  polarity-flip path (`decoder::invert_plane_in_place`), the
+  standalone encoder (`encoder::encode_wbmp`), and the registry-side
+  `MonoBlack` ingress branch in `WbmpEncoder::send_frame`. The encoder
+  and decoder polarity-flip branches now share the exact same mask
+  byte by querying the same `PlaneLayout::last_byte_pad_mask` field
+  rather than each computing `0xFF << (8 * stride - width)` from
+  scratch, so any future change to the padding convention only has to
+  edit one struct field. Five unit tests in `src/image.rs::tests`
+  cover the byte-aligned / partial-byte / zero-dimension /
+  total-bytes-matches-row-stride-times-height / 32-bit-overflow
+  cases. No wire-format or public-API behaviour change.
 - Round-13 coverage: twenty new integration tests in
   `tests/round13_registry_traits.rs` exercising the framework trait
   surface end-to-end — the `Decoder` / `Encoder` / `Demuxer` / `Muxer`

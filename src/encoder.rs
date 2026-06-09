@@ -25,6 +25,8 @@
 
 use crate::error::{Result, WbmpError};
 use crate::header::write_header;
+#[cfg(feature = "registry")]
+use crate::image::PlaneLayout;
 use crate::image::WbmpImage;
 
 #[cfg(feature = "registry")]
@@ -45,20 +47,19 @@ pub fn encode_wbmp(width: u32, height: u32, mono_bits: &[u8]) -> Result<Vec<u8>>
             "encode_wbmp: zero dimension (width={width}, height={height})"
         )));
     }
-    let stride = WbmpImage::row_stride(width);
-    let expected = stride
-        .checked_mul(height as usize)
-        .ok_or_else(|| WbmpError::invalid("encode_wbmp: width × height overflows usize"))?;
-    if mono_bits.len() != expected {
+    let layout = crate::image::PlaneLayout::new(width, height)
+        .map_err(|msg| WbmpError::invalid(format!("encode_wbmp: {msg}")))?;
+    if mono_bits.len() != layout.total_bytes {
         return Err(WbmpError::invalid(format!(
-            "encode_wbmp: mono_bits length {} != stride*height {expected}",
-            mono_bits.len()
+            "encode_wbmp: mono_bits length {} != stride*height {}",
+            mono_bits.len(),
+            layout.total_bytes,
         )));
     }
 
     // Header is at most 1 + 1 + 5 + 5 = 12 bytes (worst case) — pre-
     // allocate accordingly so the body push doesn't reallocate.
-    let mut out = Vec::with_capacity(12 + expected);
+    let mut out = Vec::with_capacity(12 + layout.total_bytes);
     write_header(width, height, &mut out);
     out.extend_from_slice(mono_bits);
     Ok(out)
@@ -364,15 +365,19 @@ impl Encoder for WbmpEncoder {
                 // Mask off any padding bits in the last byte of each
                 // row: width may not be a multiple of 8, and inverting
                 // would flip the padding zeros to ones, which the
-                // decoder ignores but is messy on disk.
-                let stride = WbmpImage::row_stride(width);
-                let pad_bits = (stride * 8) - width as usize;
-                if pad_bits > 0 {
-                    let mask: u8 = !((1u16 << pad_bits) - 1) as u8;
+                // decoder ignores but is messy on disk. The mask byte
+                // comes from the `PlaneLayout` typed primitive — the
+                // same one the decoder's polarity-flip path uses in
+                // `decoder::invert_plane_in_place`, so the encoder and
+                // decoder agree on the convention by sharing the
+                // computation rather than duplicating it.
+                let layout = PlaneLayout::new(width, height)
+                    .map_err(|msg| oxideav_core::Error::invalid(msg.to_string()))?;
+                if layout.last_byte_pad_mask != 0xFF && layout.stride > 0 {
                     for y in 0..height as usize {
-                        let last = y * stride + (stride - 1);
+                        let last = y * layout.stride + (layout.stride - 1);
                         if last < inverted.len() {
-                            inverted[last] &= mask;
+                            inverted[last] &= layout.last_byte_pad_mask;
                         }
                     }
                 }

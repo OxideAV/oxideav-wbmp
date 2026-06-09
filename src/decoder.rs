@@ -10,7 +10,7 @@
 
 use crate::error::{Result, WbmpError};
 use crate::header::{parse_header, parse_header_strict};
-use crate::image::{WbmpImage, WbmpPixelFormat, WbmpPlane};
+use crate::image::{PlaneLayout, WbmpImage, WbmpPixelFormat, WbmpPlane};
 use crate::limits::WbmpLimits;
 
 #[cfg(feature = "registry")]
@@ -161,36 +161,38 @@ fn parse_wbmp_inner(input: &[u8], limits: &WbmpLimits, strict: bool) -> Result<W
         )));
     }
 
-    let stride = WbmpImage::row_stride(header.width);
-    let expected = stride
-        .checked_mul(header.height as usize)
-        .ok_or_else(|| WbmpError::invalid("WBMP: width × height overflows usize"))?;
+    let layout = PlaneLayout::new(header.width, header.height)
+        .map_err(|msg| WbmpError::invalid(msg.to_string()))?;
 
-    if expected > limits.max_pixel_bytes {
+    if layout.total_bytes > limits.max_pixel_bytes {
         return Err(WbmpError::limit_exceeded(format!(
-            "WBMP: pixel-data size {expected} exceeds max_pixel_bytes {}",
-            limits.max_pixel_bytes
+            "WBMP: pixel-data size {} exceeds max_pixel_bytes {}",
+            layout.total_bytes, limits.max_pixel_bytes
         )));
     }
 
     let body = &input[header.data_offset..];
-    if body.len() < expected {
+    if body.len() < layout.total_bytes {
         return Err(WbmpError::invalid(format!(
-            "WBMP: pixel data truncated (need {expected} bytes, got {})",
+            "WBMP: pixel data truncated (need {} bytes, got {})",
+            layout.total_bytes,
             body.len()
         )));
     }
 
     // Byte layout matches our plane format directly — copy verbatim.
-    // We allow trailing bytes past `expected` (some encoders pad to
-    // even byte boundaries); we just drop them.
-    let data = body[..expected].to_vec();
+    // We allow trailing bytes past `layout.total_bytes` (some encoders
+    // pad to even byte boundaries); we just drop them.
+    let data = body[..layout.total_bytes].to_vec();
 
     Ok(WbmpImage {
         width: header.width,
         height: header.height,
         pixel_format: WbmpPixelFormat::MonoWhite,
-        planes: vec![WbmpPlane { stride, data }],
+        planes: vec![WbmpPlane {
+            stride: layout.stride,
+            data,
+        }],
         pts: None,
     })
 }
@@ -265,24 +267,33 @@ fn convert_plane_polarity(image: &mut WbmpImage, target: WbmpPixelFormat) {
 /// callers iterating bit-by-bit would mistake for real foreground
 /// pixels. We mask it back to zero so the plane stays well-formed
 /// regardless of polarity.
+///
+/// The per-row mask comes from the [`PlaneLayout`] typed primitive
+/// (`last_byte_pad_mask`), which is the same byte the encoder's
+/// `MonoBlack` ingress branch uses — keeping the two sites in sync on
+/// the masking convention.
 fn invert_plane_in_place(image: &mut WbmpImage) {
     let plane = &mut image.planes[0];
     for b in plane.data.iter_mut() {
         *b = !*b;
     }
-    let width = image.width as usize;
-    let stride = plane.stride;
-    let pad_bits = stride.saturating_mul(8).saturating_sub(width);
-    if pad_bits > 0 && pad_bits < 8 && stride > 0 {
-        // Mask of the leading `8 - pad_bits` MSB-first pixel bits.
-        // For width=11 (stride=2, pad_bits=5) → mask 0b1110_0000.
-        // Matches the encoder's MonoBlack padding-mask in
-        // `encoder::WbmpEncoder::send_frame`.
-        let mask: u8 = 0xFFu8 << pad_bits;
-        for y in 0..image.height as usize {
-            let last = y * stride + (stride - 1);
+    // `PlaneLayout::new` only fails on usize overflow; we already
+    // allocated the plane bytes for this (width, height) so by
+    // construction the layout is computable.
+    let layout = match PlaneLayout::new(image.width, image.height) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    // `last_byte_pad_mask` is 0xFF when there are no padding bits to
+    // mask — in that case the per-row AND below is a no-op, but
+    // skipping the loop also skips the per-row branch + index
+    // computation. The width=0 case still has stride=0 and would
+    // produce a malformed `last = -1` index without this guard.
+    if layout.last_byte_pad_mask != 0xFF && layout.stride > 0 {
+        for y in 0..layout.height as usize {
+            let last = y * layout.stride + (layout.stride - 1);
             if last < plane.data.len() {
-                plane.data[last] &= mask;
+                plane.data[last] &= layout.last_byte_pad_mask;
             }
         }
     }
