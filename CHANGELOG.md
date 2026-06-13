@@ -7,6 +7,35 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Extension-header (`ExtFields`) parsing — WAP-237 §4.4.1–§4.4.3 — in
+  the new `src/ext.rs` module. The general WBMP header format
+  (`Header = TypeField FixHeaderField [ExtFields] Width Height`)
+  permits an optional extension-header region between the
+  FixHeaderField and the Width MBI; the FixHeaderField's bit-7
+  presence flag (Table 4-3) signals it and bits 6-5 select its type.
+  The module decodes the FixHeaderField bitfields (`FixHeaderField`,
+  `ExtFieldType`) and all four ExtFields layouts: Type 00 multi-byte
+  reserved bitfield (bit-7 continuation chain), Type 01 / Type 10
+  single reserved octet, and Type 11 parameter/value-pair sequence
+  (`ParameterHeader` = concat flag | 3-bit identifier size 1-8 |
+  4-bit value size 1-16, followed by the US-ASCII identifier and
+  alphanumeric value, §4.4.3 Table 4-4). Two public entry points:
+  `parse_ext_fields` (decode a region given a `FixHeaderField`) and
+  `write_ext_fields` (the inverse serializer, for round-trip / hand
+  construction). A new `header::parse_header_ext` returns the richer
+  `HeaderExt` — width/height/data_offset plus the decoded
+  FixHeaderField and `Option<ExtFields>` — honouring the presence flag
+  so the decoder lands on the real Width/Height instead of mis-reading
+  the first ExtField octet as the width MBI when a (non-conformant)
+  Type-0 file carries extension headers. A `MAX_EXT_FIELD_BYTES`
+  ceiling (4096) bounds pathological all-continuation chains. The
+  existing lax/strict `parse_header` / `parse_wbmp` paths are
+  unchanged (Type 0 conformantly fixes FixHeaderField at `0x00`, so
+  there are never ExtFields in shipped files); the new path is purely
+  additive. 31 new unit tests in `src/ext.rs` and 6 in `src/header.rs`
+  cover every layout, the write/parse round trip, truncation, the
+  zero-size / oversize-length rejections, and the byte-cap guards. No
+  wire-format change to the conformant encoder.
 - Typed primitive `PlaneLayout` in `src/image.rs` capturing the
   byte-level layout of a single packed mono plane: `width`, `height`,
   `stride` (= `ceil(width / 8)`), `total_bytes` (= `stride * height`,

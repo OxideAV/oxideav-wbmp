@@ -69,6 +69,7 @@
 pub mod decoder;
 pub mod encoder;
 pub mod error;
+pub mod ext;
 pub mod header;
 pub mod image;
 pub mod limits;
@@ -88,7 +89,13 @@ pub use decoder::{
 };
 pub use encoder::{encode_wbmp, encode_wbmp_from_dither, encode_wbmp_from_threshold};
 pub use error::{Result, WbmpError};
-pub use header::{parse_header, parse_header_strict, write_header, Header};
+pub use ext::{
+    parse_ext_fields, write_ext_fields, ExtFieldType, ExtFields, FixHeaderField, Parameter,
+    MAX_EXT_FIELD_BYTES,
+};
+pub use header::{
+    parse_header, parse_header_ext, parse_header_strict, write_header, Header, HeaderExt,
+};
 pub use image::{PlaneLayout, WbmpImage, WbmpPixelFormat, WbmpPlane};
 pub use limits::WbmpLimits;
 pub use mbi::{mbi_u32_len, read_mbi_u32, write_mbi_u32, MAX_MBI_BYTES, MAX_U32_MBI_BYTES};

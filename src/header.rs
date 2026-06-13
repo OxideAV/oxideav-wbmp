@@ -25,6 +25,7 @@
 //! [`crate::WbmpImage`] for how the decoded plane lays out).
 
 use crate::error::{Result, WbmpError};
+use crate::ext::{parse_ext_fields, ExtFields, FixHeaderField};
 use crate::mbi::{read_mbi_u32, write_mbi_u32};
 
 /// Decoded WBMP header — Type 0 only.
@@ -37,6 +38,49 @@ pub struct Header {
     /// Byte offset at which pixel data starts (i.e. just past the
     /// parsed header).
     pub data_offset: usize,
+}
+
+/// Decoded WBMP header including any parsed extension headers
+/// (`ExtFields`, §4.4.1–§4.4.3).
+///
+/// This is the richer counterpart to [`Header`]: it carries the
+/// decoded [`FixHeaderField`] bitfields and, when the FixHeaderField's
+/// presence flag is set, the parsed [`ExtFields`] region. Use
+/// [`parse_header_ext`] to obtain it.
+///
+/// In a conformant WBMP **Type 0** file `fix_header.ext_fields_follow`
+/// is always `false` and `ext_fields` is `None` — §4.5.1 fixes the
+/// FixHeaderField at `0x00` ("Extension headers MUST NOT be presented
+/// in this format"). The extension-header machinery exists so the
+/// decoder can still correctly locate `Width`/`Height` (and surface the
+/// parameters) when a producer emits a non-conformant Type-0 file
+/// carrying extension headers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeaderExt {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Byte offset at which pixel data starts (just past the parsed
+    /// header, including any ExtFields).
+    pub data_offset: usize,
+    /// The decoded `FixHeaderField` byte (§4.4.2).
+    pub fix_header: FixHeaderField,
+    /// The parsed `ExtFields` region, or `None` when the FixHeaderField
+    /// presence flag is clear.
+    pub ext_fields: Option<ExtFields>,
+}
+
+impl HeaderExt {
+    /// Narrow to the plain four-field [`Header`] view, discarding the
+    /// extension-header detail.
+    pub fn header(&self) -> Header {
+        Header {
+            width: self.width,
+            height: self.height,
+            data_offset: self.data_offset,
+        }
+    }
 }
 
 /// Parse the four header fields. Returns the [`Header`] on success
@@ -67,6 +111,67 @@ pub fn parse_header(bytes: &[u8]) -> Result<Header> {
 /// hypothetical Type-0 extensions; this one is not.
 pub fn parse_header_strict(bytes: &[u8]) -> Result<Header> {
     parse_header_inner(bytes, true)
+}
+
+/// Parse the header **including** any extension headers (`ExtFields`,
+/// §4.4.1–§4.4.3), returning the richer [`HeaderExt`].
+///
+/// Unlike [`parse_header`] — which treats the `FixHeaderField` byte as
+/// opaque and reads `Width`/`Height` immediately after it — this entry
+/// point honours the FixHeaderField's bit-7 presence flag: when it is
+/// set, the `ExtFields` region (whose layout is selected by bits 6-5)
+/// is decoded and skipped before reading `Width`/`Height`. That keeps
+/// the decoder from mis-reading the first ExtField octet as the width
+/// MBI on a (non-conformant) Type-0 file that carries extension
+/// headers, and surfaces the parsed [`ExtFields`] to the caller.
+///
+/// In a conformant Type-0 file the presence flag is always clear, so
+/// `ext_fields` comes back `None` and the result is byte-for-byte
+/// equivalent to [`parse_header`].
+///
+/// Errors:
+/// * [`WbmpError::Unsupported`] if the Type field is non-zero.
+/// * [`WbmpError::InvalidData`] for truncated/oversized MBIs, a
+///   truncated or over-long ExtFields region, or a zero dimension.
+pub fn parse_header_ext(bytes: &[u8]) -> Result<HeaderExt> {
+    let mut offset = 0usize;
+
+    // Field 1: Type (MBI). Type 0 only.
+    let typ = read_mbi_u32(bytes, &mut offset)?;
+    if typ != 0 {
+        return Err(WbmpError::unsupported(format!(
+            "WBMP type {typ} (only type 0 / B/W bitmap is supported)"
+        )));
+    }
+
+    // Field 2: FixHeaderField (one byte) — decoded into its bitfields.
+    if offset >= bytes.len() {
+        return Err(WbmpError::invalid("WBMP: header truncated at FixedHeader"));
+    }
+    let fix_header = FixHeaderField::from_byte(bytes[offset]);
+    offset += 1;
+
+    // Field 3 (optional): ExtFields, present iff the FixHeaderField
+    // bit-7 presence flag is set.
+    let ext_fields = parse_ext_fields(fix_header, bytes, &mut offset)?;
+
+    // Fields 4-5: Width, Height (MBIs).
+    let width = read_mbi_u32(bytes, &mut offset)?;
+    let height = read_mbi_u32(bytes, &mut offset)?;
+
+    if width == 0 || height == 0 {
+        return Err(WbmpError::invalid(format!(
+            "WBMP: zero dimension (width={width}, height={height})"
+        )));
+    }
+
+    Ok(HeaderExt {
+        width,
+        height,
+        data_offset: offset,
+        fix_header,
+        ext_fields,
+    })
 }
 
 fn parse_header_inner(bytes: &[u8], strict: bool) -> Result<Header> {
@@ -245,6 +350,99 @@ mod tests {
         // Zero width/height must still be InvalidData in strict mode.
         let buf = [0x00u8, 0x00, 0x00, 0x01];
         let err = parse_header_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    // --- parse_header_ext (extension-header aware) tests. ---
+
+    #[test]
+    fn ext_conformant_type0_matches_plain_header() {
+        // FixHeaderField = 0x00 (presence flag clear): parse_header_ext
+        // must agree with parse_header and report no ExtFields.
+        let mut buf = Vec::new();
+        write_header(96, 64, &mut buf);
+        let plain = parse_header(&buf).unwrap();
+        let ext = parse_header_ext(&buf).unwrap();
+        assert_eq!(ext.header(), plain);
+        assert!(ext.ext_fields.is_none());
+        assert!(!ext.fix_header.ext_fields_follow);
+        assert_eq!(ext.width, 96);
+        assert_eq!(ext.height, 64);
+        assert_eq!(ext.data_offset, buf.len());
+    }
+
+    #[test]
+    fn ext_skips_type11_parameter_pairs_before_dimensions() {
+        // Non-conformant Type-0 file carrying a single Type-11
+        // parameter pair. The plain parser would mis-read the
+        // ParameterHeader octet as the width MBI; parse_header_ext must
+        // skip the ExtFields and land on the real Width/Height.
+        use crate::ext::{write_ext_fields, ExtFields, Parameter};
+        let mut buf = Vec::new();
+        // Type = 0.
+        write_mbi_u32(0, &mut buf);
+        // FixHeaderField: bit7=1 (ext follow), type=11.
+        buf.push(0b1110_0000);
+        // One parameter pair.
+        let ext = ExtFields::ParameterPairs11(vec![Parameter {
+            identifier: b"x".to_vec(),
+            value: b"1".to_vec(),
+        }]);
+        write_ext_fields(&ext, &mut buf).unwrap();
+        // Width = 200 (2-byte MBI), Height = 3.
+        write_mbi_u32(200, &mut buf);
+        write_mbi_u32(3, &mut buf);
+
+        let parsed = parse_header_ext(&buf).unwrap();
+        assert_eq!(parsed.width, 200);
+        assert_eq!(parsed.height, 3);
+        assert_eq!(parsed.ext_fields, Some(ext));
+        assert_eq!(parsed.data_offset, buf.len());
+        assert!(parsed.fix_header.ext_fields_follow);
+    }
+
+    #[test]
+    fn ext_skips_bitfield00_chain_before_dimensions() {
+        use crate::ext::{write_ext_fields, ExtFields};
+        let mut buf = Vec::new();
+        write_mbi_u32(0, &mut buf);
+        buf.push(0b1000_0000); // bit7=1, type=00
+        let ext = ExtFields::Bitfield00(vec![0x01, 0x42]);
+        write_ext_fields(&ext, &mut buf).unwrap();
+        write_mbi_u32(8, &mut buf); // width
+        write_mbi_u32(8, &mut buf); // height
+        let parsed = parse_header_ext(&buf).unwrap();
+        assert_eq!(parsed.width, 8);
+        assert_eq!(parsed.height, 8);
+        assert_eq!(parsed.ext_fields, Some(ext));
+    }
+
+    #[test]
+    fn ext_rejects_nonzero_type() {
+        let buf = [0x01u8, 0x00, 0x10, 0x10];
+        let err = parse_header_ext(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::Unsupported(_)), "{err:?}");
+    }
+
+    #[test]
+    fn ext_rejects_truncated_ext_fields() {
+        // Presence flag set, type=00, but the bitfield chain never
+        // terminates before the stream ends.
+        let buf = [0x00u8, 0b1000_0000, 0x80];
+        let err = parse_header_ext(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn ext_rejects_zero_dimension_after_ext() {
+        use crate::ext::{write_ext_fields, ExtFields};
+        let mut buf = Vec::new();
+        write_mbi_u32(0, &mut buf);
+        buf.push(0b1000_0000);
+        write_ext_fields(&ExtFields::Bitfield00(vec![0x00]), &mut buf).unwrap();
+        write_mbi_u32(0, &mut buf); // width = 0 → invalid
+        write_mbi_u32(1, &mut buf);
+        let err = parse_header_ext(&buf).unwrap_err();
         assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
     }
 

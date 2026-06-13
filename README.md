@@ -53,6 +53,38 @@ points `parse_header` / `parse_header_strict` expose the same split
 for callers that want to inspect the four-field header without
 touching the pixel plane.
 
+## Extension headers (`ExtFields`)
+
+The general WBMP header format (WAP-237 §4.4.1) is
+`TypeField FixHeaderField [ExtFields] Width Height` — an optional
+extension-header region may sit between the FixHeaderField and the
+Width MBI. The FixHeaderField's high bit (Table 4-3) is the
+"ExtFields follow" presence flag, and bits 6-5 select the extension
+type. WBMP **Type 0** conformantly fixes the FixHeaderField at `0x00`
+(§4.5.1: "Extension headers MUST NOT be presented in this format"), so
+a real shipped WBMP never carries any — but the format is defined, and
+[`ext`](src/ext.rs) parses it in full:
+
+| Type | Layout (§4.4.1, §4.4.3) |
+|------|-------------------------|
+| 00   | Multi-byte reserved bitfield; bit 7 of each octet is a "more data follows" continuation flag, the rest reserved. |
+| 01   | Single reserved octet. |
+| 10   | Single reserved octet. |
+| 11   | Sequence of `ParameterHeader ParameterIdentifier ParameterValue` pairs. The `ParameterHeader` octet is `concat-flag | 3-bit identifier-size (1-8) | 4-bit value-size (1-16)`; the identifier is a US-ASCII string, the value alphanumeric (Table 4-4). |
+
+`parse_ext_fields` decodes a region given a `FixHeaderField`;
+`write_ext_fields` is the inverse serializer. The header-level
+[`parse_header_ext`] returns a `HeaderExt` (width / height /
+data_offset + the decoded FixHeaderField + `Option<ExtFields>`) that
+honours the presence flag, so the decoder lands on the real
+Width/Height rather than mis-reading the first ExtField octet as the
+width MBI when a non-conformant Type-0 file carries extension headers.
+A `MAX_EXT_FIELD_BYTES` (4096) ceiling bounds pathological
+all-continuation chains. The plain `parse_header` / `parse_wbmp` paths
+are unchanged — they treat the FixHeaderField byte as opaque (the
+forward-compat lax behaviour documented above), so this is a purely
+additive entry point.
+
 `parse_wbmp` (and `parse_wbmp_with_limits`) emit the on-disk
 polarity unchanged — `WbmpPixelFormat::MonoWhite`, where bit `1` is
 white. Callers that want the inverted polarity for downstream
