@@ -6,6 +6,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-wbmp/compare/v0.0.2...v0.0.3) - 2026-06-14
+
+### Other
+
+- extension-header-aware decode path parse_wbmp_ext + decode_ext fuzz target
+- add header_ext target over parse_header_ext extension-header parser
+- parse WBMP extension headers (ExtFields, WAP-237 §4.4.1–§4.4.3)
+- Typed primitive PlaneLayout for stride / total-bytes / pad mask
+- drop release-plz.toml — use release-plz defaults across the workspace
+- Round-13 coverage: framework trait surface integration tests
+- Round-12 API surface: strict header conformance entry points
+- Round-11 hardening: fifth cargo-fuzz target for parse_wbmp_as(MonoBlack)
+- Round-10 perf: accumulator-flush pack in encode_wbmp_from_dither
+- Round-9 hardening: fourth cargo-fuzz target for encode_wbmp_from_dither
+- Round-8 API surface: encode_wbmp_from_dither (Floyd-Steinberg)
+- Round-7 hardening: third cargo-fuzz target for encode_wbmp_from_threshold
+
 ### Added
 - Extension-header-aware decode entry points `parse_wbmp_ext` /
   `parse_wbmp_ext_with_limits`, returning a new `WbmpImageExt`
