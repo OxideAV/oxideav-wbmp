@@ -53,6 +53,19 @@ points `parse_header` / `parse_header_strict` expose the same split
 for callers that want to inspect the four-field header without
 touching the pixel plane.
 
+The strict path additionally enforces the §4.3.1 **shortest-encoding**
+requirement on every multi-byte integer: the spec states the encoded
+value "MUST NOT start with an octet with the value `0x80`", i.e. a
+redundant leading continuation octet that carries no payload bits. The
+lax path tolerates a bounded amount of such leading-`0x80` padding (a
+few real files pad despite the MUST NOT); the strict path rejects it
+as `WbmpError::InvalidData` on the Type, Width or Height MBI. An
+*interior* `0x80` group is still accepted in both paths — it is a
+legitimate all-zero 7-bit group with more bytes following (e.g.
+`0x4000` minimally encodes as `0x81 0x80 0x00`); only a *leading*
+`0x80` is forbidden. The standalone reader pair is `read_mbi_u32`
+(lax) / `read_mbi_u32_strict`.
+
 ## Extension headers (`ExtFields`)
 
 The general WBMP header format (WAP-237 §4.4.1) is

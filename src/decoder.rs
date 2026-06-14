@@ -698,6 +698,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_wbmp_strict_rejects_redundantly_padded_dimension_mbi() {
+        // §4.3.1 shortest-encoding MUST NOT, now enforced on the full
+        // strict decode path: a leading-0x80-padded Width MBI is decoded
+        // fine by the lax parser but rejected by the strict one. The
+        // FixedHeader is the conformant 0x00 so this isolates the MBI
+        // shortest-encoding check from the FixedHeader check.
+        let buf = [
+            0x00u8, // Type = 0
+            0x00,   // FixedHeader = 0x00 (conformant)
+            0x80, 0x0B, // Width = 11, but non-minimal (leading 0x80)
+            0x01, // Height = 1
+            0xAC, 0xE0, // 11 pixels packed
+        ];
+        let lax = parse_wbmp(&buf).unwrap();
+        assert_eq!(lax.width, 11);
+        let err = parse_wbmp_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
     fn parse_wbmp_strict_with_limits_enforces_both() {
         // FixedHeader violation fires first (before the limit check)
         // when the file is also out of bounds — the strict header path

@@ -7,6 +7,31 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Shortest-encoding MBI conformance on the strict decode path
+  (WAP-237 §4.3.1). The spec is explicit: *"The unsigned integer MUST
+  be encoded in the smallest encoding possible. In other words, the
+  encoded value MUST NOT start with an octet with the value 0x80."* A
+  new `mbi::read_mbi_u32_strict` reader enforces that MUST NOT — a
+  leading `0x80` octet (a redundant, no-payload continuation byte) is
+  rejected as `WbmpError::InvalidData`, while an *interior* `0x80` group
+  (e.g. the middle octet of `0x4000` = `0x81 0x80 0x00`) is still
+  accepted, since only a *leading* `0x80` is forbidden. The strict
+  header / decode entry points (`parse_header_strict`,
+  `parse_wbmp_strict`, `parse_wbmp_strict_with_limits`) now route their
+  Type / Width / Height MBI reads through the strict reader, so a strict
+  parse rejects redundantly-padded dimension fields in addition to the
+  existing non-`0x00` `FixedHeader` rejection. The lax
+  `read_mbi_u32` / `parse_header` / `parse_wbmp` paths are unchanged —
+  they continue to tolerate a bounded amount of leading-`0x80` padding
+  for forward-compat with files seen in the wild. `read_mbi_u32_strict`
+  is re-exported from the crate root. Eleven new unit tests across
+  `src/mbi.rs` (leading-`0x80` rejection, interior-`0x80` acceptance,
+  offset-relative leading-octet check, inherited truncation / overflow
+  guards), `src/header.rs` (strict rejection of padded Type / Width
+  MBIs, acceptance of minimal MBIs with an interior `0x80`), and
+  `src/decoder.rs` (full strict-decode path rejecting a padded Width
+  MBI behind a conformant `0x00` FixedHeader). No wire-format change to
+  the conformant encoder, which already emits shortest encodings.
 - Extension-header-aware decode entry points `parse_wbmp_ext` /
   `parse_wbmp_ext_with_limits`, returning a new `WbmpImageExt`
   (`{ image: WbmpImage, ext_fields: Option<ExtFields> }`). The prior

@@ -26,7 +26,7 @@
 
 use crate::error::{Result, WbmpError};
 use crate::ext::{parse_ext_fields, ExtFields, FixHeaderField};
-use crate::mbi::{read_mbi_u32, write_mbi_u32};
+use crate::mbi::{read_mbi_u32, read_mbi_u32_strict, write_mbi_u32};
 
 /// Decoded WBMP header — Type 0 only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,8 +177,17 @@ pub fn parse_header_ext(bytes: &[u8]) -> Result<HeaderExt> {
 fn parse_header_inner(bytes: &[u8], strict: bool) -> Result<Header> {
     let mut offset = 0usize;
 
+    // In strict mode every MBI must obey the §4.3.1 shortest-encoding
+    // MUST NOT (no leading 0x80 octet); the lax path tolerates a bounded
+    // amount of redundant padding for forward-compat.
+    let read = if strict {
+        read_mbi_u32_strict
+    } else {
+        read_mbi_u32
+    };
+
     // Field 1: Type (MBI). Type 0 only.
-    let typ = read_mbi_u32(bytes, &mut offset)?;
+    let typ = read(bytes, &mut offset)?;
     if typ != 0 {
         return Err(WbmpError::unsupported(format!(
             "WBMP type {typ} (only type 0 / B/W bitmap is supported)"
@@ -200,8 +209,8 @@ fn parse_header_inner(bytes: &[u8], strict: bool) -> Result<Header> {
     offset += 1;
 
     // Fields 3-4: Width, Height (MBIs).
-    let width = read_mbi_u32(bytes, &mut offset)?;
-    let height = read_mbi_u32(bytes, &mut offset)?;
+    let width = read(bytes, &mut offset)?;
+    let height = read(bytes, &mut offset)?;
 
     if width == 0 || height == 0 {
         return Err(WbmpError::invalid(format!(
@@ -351,6 +360,52 @@ mod tests {
         let buf = [0x00u8, 0x00, 0x00, 0x01];
         let err = parse_header_strict(&buf).unwrap_err();
         assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn strict_rejects_redundantly_padded_width_mbi() {
+        // §4.3.1: every MBI MUST use the shortest encoding. Here the
+        // Width MBI is padded with a leading 0x80 (0x80 0x60 = value
+        // 96, but non-minimal). The lax parser tolerates it; the strict
+        // parser rejects it as InvalidData naming the shortest-encoding
+        // rule. FixedHeader stays 0x00 so this isolates the MBI check.
+        let buf = [0x00u8, 0x00, 0x80, 0x60, 0x40];
+        // Lax: accepted, width == 96.
+        let lax = parse_header(&buf).unwrap();
+        assert_eq!(lax.width, 96);
+        assert_eq!(lax.height, 64);
+        // Strict: rejected.
+        let err = parse_header_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+        if let WbmpError::InvalidData(msg) = &err {
+            assert!(
+                msg.contains("shortest"),
+                "message should cite the rule: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_rejects_redundantly_padded_type_mbi() {
+        // The leading Type MBI must also be shortest-encoded: 0x80 0x00
+        // = value 0 with redundant padding. Strict rejects it before it
+        // ever reaches the Type==0 check.
+        let buf = [0x80u8, 0x00, 0x00, 0x01, 0x01];
+        assert!(parse_header(&buf).is_ok());
+        let err = parse_header_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn strict_accepts_minimal_mbis_with_interior_0x80() {
+        // 0x4000 encodes as 0x81 0x80 0x00 — a *minimal* encoding whose
+        // middle octet is 0x80. The strict parser must accept it (only a
+        // leading 0x80 is forbidden). Width = 0x4000, Height = 1.
+        let buf = [0x00u8, 0x00, 0x81, 0x80, 0x00, 0x01];
+        let strict = parse_header_strict(&buf).unwrap();
+        assert_eq!(strict.width, 0x4000);
+        assert_eq!(strict.height, 1);
+        assert_eq!(strict, parse_header(&buf).unwrap());
     }
 
     // --- parse_header_ext (extension-header aware) tests. ---

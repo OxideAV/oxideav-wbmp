@@ -99,7 +99,9 @@ pub use header::{
 };
 pub use image::{PlaneLayout, WbmpImage, WbmpPixelFormat, WbmpPlane};
 pub use limits::WbmpLimits;
-pub use mbi::{mbi_u32_len, read_mbi_u32, write_mbi_u32, MAX_MBI_BYTES, MAX_U32_MBI_BYTES};
+pub use mbi::{
+    mbi_u32_len, read_mbi_u32, read_mbi_u32_strict, write_mbi_u32, MAX_MBI_BYTES, MAX_U32_MBI_BYTES,
+};
 
 #[cfg(feature = "registry")]
 pub use registry::{register, register_codecs, register_containers};

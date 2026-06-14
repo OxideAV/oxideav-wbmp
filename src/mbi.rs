@@ -18,11 +18,19 @@
 //!         0x81 0x20
 //! ```
 //!
-//! On the encode side we write the minimum number of bytes required
-//! (no leading 0x80 padding); on the decode side we accept any number
-//! of leading 0x80 bytes that don't make the running value exceed the
-//! `u32` range, since WAP-237 doesn't outlaw redundant encodings and a
-//! few reference test vectors in the wild do pad.
+//! On the encode side we always write the minimum number of bytes
+//! required (no leading 0x80 padding), which is exactly what the spec
+//! mandates: WAP-237 §4.3.1 states *"The unsigned integer MUST be
+//! encoded in the smallest encoding possible. In other words, the
+//! encoded value MUST NOT start with an octet with the value 0x80."*
+//!
+//! On the decode side we offer two readers. [`read_mbi_u32`] is **lax**:
+//! it accepts a bounded number of leading 0x80 padding octets (some
+//! files in the wild pad despite the MUST NOT), as long as the running
+//! value stays within the `u32` range. [`read_mbi_u32_strict`] enforces
+//! the §4.3.1 MUST NOT verbatim — a leading 0x80 octet is rejected as
+//! [`WbmpError::InvalidData`]. The strict reader feeds the strict header
+//! / decode entry points so a fully-conformant parse can be requested.
 //!
 //! All MBIs WBMP actually uses (Type, Width, Height) are unsigned and
 //! comfortably fit in `u32` — the spec caps the bitmap dimensions at
@@ -90,6 +98,34 @@ pub fn read_mbi_u32(bytes: &[u8], offset: &mut usize) -> Result<u32> {
             return Ok(value as u32);
         }
     }
+}
+
+/// Decode a single MBI starting at `bytes[*offset]`, enforcing the
+/// §4.3.1 shortest-encoding requirement.
+///
+/// WAP-237 §4.3.1 (page 9): *"The unsigned integer MUST be encoded in
+/// the smallest encoding possible. In other words, the encoded value
+/// MUST NOT start with an octet with the value 0x80."* This reader
+/// rejects such a leading octet — a value of `0x80` as the first byte
+/// of the sequence means a redundant continuation octet that carries no
+/// payload bits and could have been omitted. Every other check (truncated
+/// continuation, `u32::MAX` overflow, the [`MAX_MBI_BYTES`] ceiling) is
+/// identical to [`read_mbi_u32`]; on success the offset is advanced past
+/// the consumed bytes and the decoded value returned.
+///
+/// Note the spec wording forbids a *leading* `0x80` specifically — a
+/// `0x80` octet later in the sequence is a legitimate "this 7-bit group
+/// is all zero, more bytes follow" group (e.g. `0x4000` encodes as
+/// `0x81 0x80 0x00`), so only the first octet of the sequence is checked.
+pub fn read_mbi_u32_strict(bytes: &[u8], offset: &mut usize) -> Result<u32> {
+    let start = *offset;
+    if start < bytes.len() && bytes[start] == 0x80 {
+        return Err(WbmpError::invalid(format!(
+            "MBI starting at byte {start}: leading octet 0x80 violates the \
+             shortest-encoding requirement (§4.3.1)"
+        )));
+    }
+    read_mbi_u32(bytes, offset)
 }
 
 /// Append `value` to `out` as an MBI.
@@ -242,6 +278,76 @@ mod tests {
         let v = read_mbi_u32(&bytes, &mut offset).unwrap();
         assert_eq!(v, u32::MAX);
         assert_eq!(offset, MAX_MBI_BYTES);
+    }
+
+    #[test]
+    fn strict_rejects_leading_0x80() {
+        // §4.3.1 MUST NOT: the encoded value must not start with an
+        // octet of value 0x80. The lax reader accepts `0x80 0x80 0x00`
+        // (= value 0 with redundant padding); the strict reader rejects
+        // it on the first octet.
+        let bytes = [0x80u8, 0x80, 0x00];
+        // Lax: still accepted (see redundant_padding_is_accepted).
+        let mut off = 0;
+        assert_eq!(read_mbi_u32(&bytes, &mut off).unwrap(), 0);
+        // Strict: rejected, offset untouched (the check fires before any
+        // byte is consumed).
+        let mut off = 0;
+        let err = read_mbi_u32_strict(&bytes, &mut off).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+        assert_eq!(off, 0);
+        if let WbmpError::InvalidData(msg) = &err {
+            assert!(
+                msg.contains("0x80") && msg.contains("shortest"),
+                "message should name the offending octet + rule: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_accepts_shortest_encodings() {
+        // Every minimally-encoded value must parse identically through
+        // the strict reader. Includes the 0x4000 case whose *internal*
+        // octet is 0x80 (0x81 0x80 0x00) — only a *leading* 0x80 is
+        // forbidden, so this must be accepted.
+        for &(value, enc) in &[
+            (0u32, &[0x00u8][..]),
+            (0x7F, &[0x7F][..]),
+            (0x80, &[0x81, 0x00][..]),
+            (0x4000, &[0x81, 0x80, 0x00][..]),
+            (u32::MAX, &[0x8F, 0xFF, 0xFF, 0xFF, 0x7F][..]),
+        ] {
+            let mut off = 0;
+            let v = read_mbi_u32_strict(enc, &mut off).unwrap();
+            assert_eq!(v, value, "strict decode {value:#x}");
+            assert_eq!(off, enc.len(), "consumed all bytes for {value:#x}");
+        }
+    }
+
+    #[test]
+    fn strict_offset_starts_at_nonzero() {
+        // The leading-octet check is keyed off the *current* offset, not
+        // byte 0 of the slice. A 0x80 sitting at the start of the slice
+        // but past the offset (i.e. it's an interior continuation octet
+        // of an earlier value) must not trip the strict reader.
+        // Buffer: [0x4000 as 0x81 0x80 0x00][0x40 as 0x40].
+        let bytes = [0x81u8, 0x80, 0x00, 0x40];
+        let mut off = 0;
+        assert_eq!(read_mbi_u32_strict(&bytes, &mut off).unwrap(), 0x4000);
+        assert_eq!(off, 3);
+        // Second value begins at offset 3 (0x40, no leading 0x80).
+        assert_eq!(read_mbi_u32_strict(&bytes, &mut off).unwrap(), 0x40);
+        assert_eq!(off, 4);
+    }
+
+    #[test]
+    fn strict_still_rejects_truncated_and_overflow() {
+        // The strict reader inherits the lax reader's truncation +
+        // overflow guards (it only adds the leading-0x80 check).
+        let mut off = 0;
+        assert!(read_mbi_u32_strict(&[0x81u8], &mut off).is_err());
+        let mut off = 0;
+        assert!(read_mbi_u32_strict(&[0xFFu8, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F], &mut off).is_err());
     }
 
     #[test]
