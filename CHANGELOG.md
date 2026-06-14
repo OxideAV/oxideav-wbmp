@@ -7,6 +7,27 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Round-296 hardening: sixth `cargo-fuzz` target `header_ext`
+  exercising the general-form header parser `parse_header_ext`
+  (WAP-237 §4.4.1–§4.4.3) over arbitrary bytes. It drives the
+  `FixHeaderField` bitfield split, all four `ExtFields` type branches
+  (the type-00 continuation-bit bitfield chain, the type-01/10 single
+  reserved octets, and the type-11 parameter/value-pair chain with
+  attacker-chosen per-pair identifier/value sizes), the
+  `MAX_EXT_FIELD_BYTES` chain caps, and the offset-advance arithmetic
+  feeding the trailing `Width`/`Height` MBIs — the most attacker-driven
+  control flow in the crate, reached by none of the prior five targets
+  (they use the opaque-`FixHeaderField` `parse_header` or the encoder
+  paths). The target asserts the call always returns a `Result` and
+  never panics / overflows / reads past the input slice; that a
+  successful parse reports non-zero dimensions and a `data_offset`
+  within the input; that the parsed `ExtFields` option matches the
+  FixHeaderField bit-7 presence flag; and that any writer-representable
+  decoded `ExtFields` region survives a `write_ext_fields` →
+  `parse_ext_fields` round trip (same region, same consumed byte
+  count). A 3.0 M-execution sweep (~11 s, `-max_len=512`) found no
+  crashes, RSS bounded at ~553 MiB, libFuzzer feature coverage
+  saturated at 235 features / 578 ft. No `src/` change was required.
 - Extension-header (`ExtFields`) parsing — WAP-237 §4.4.1–§4.4.3 — in
   the new `src/ext.rs` module. The general WBMP header format
   (`Header = TypeField FixHeaderField [ExtFields] Width Height`)

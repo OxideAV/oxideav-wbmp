@@ -51,6 +51,19 @@ cargo-fuzz = true
 #                   transform. Covers the in-place padding-mask logic
 #                   in `parse_wbmp_as` — the only entry point the other
 #                   four targets don't reach.
+#  * `header_ext` — feed arbitrary bytes to `parse_header_ext`, the
+#                   general-form header parser that decodes the
+#                   FixHeaderField bitfields and the variable-length
+#                   ExtFields region (§4.4.1-§4.4.3) before the dimension
+#                   MBIs. Asserts the call always returns, dimensions are
+#                   non-zero, `data_offset` stays within the input, the
+#                   ExtFields presence matches the FixHeaderField bit-7
+#                   flag, and any decoded ExtFields survives a
+#                   write/re-parse round trip. Covers the extension-header
+#                   state machine — the most attacker-driven control flow
+#                   in the crate — that the other five targets never
+#                   reach (they all use the opaque-FixHeaderField
+#                   `parse_header` / encoder paths).
 #
 # The crate is pulled in with `default-features = false` so the fuzz
 # build exercises the framework-free standalone `parse_wbmp` /
@@ -98,5 +111,11 @@ doc = false
 [[bin]]
 name = "polarity"
 path = "fuzz_targets/polarity.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "header_ext"
+path = "fuzz_targets/header_ext.rs"
 test = false
 doc = false

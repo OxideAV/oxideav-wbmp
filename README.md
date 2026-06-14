@@ -171,7 +171,7 @@ O(1) rather than chasing the input.
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
-in [`fuzz/`](fuzz/) with five libFuzzer targets:
+in [`fuzz/`](fuzz/) with six libFuzzer targets:
 
 * `decode` — feeds arbitrary bytes to `parse_wbmp`; the decoder must
   return a `Result` and never panic / abort / OOM. The classic overflow
@@ -221,8 +221,27 @@ in [`fuzz/`](fuzz/) with five libFuzzer targets:
   in-place padding mask, skipping the mask when `pad_bits == 0`
   (full-byte width), and conditional-mask boundary errors when
   `pad_bits` is 1 or 7.
+* `header_ext` — feeds arbitrary bytes to `parse_header_ext`, the
+  general-form header parser (WAP-237 §4.4.1–§4.4.3) that decodes the
+  `FixHeaderField` bitfields and, when the bit-7 presence flag is set,
+  the variable-length `ExtFields` region before reading the
+  `Width`/`Height` MBIs. Asserts (a) the call always returns a `Result`
+  and never panics / overflows / reads past the slice, (b) a successful
+  parse reports non-zero dimensions and a `data_offset` within the
+  input, (c) the parsed `ExtFields` option matches the FixHeaderField
+  bit-7 flag, and (d) any decoded `ExtFields` survives a
+  `write_ext_fields` → `parse_ext_fields` round trip (same region, same
+  consumed byte count) whenever the region is writer-representable.
+  Covers the extension-header state machine — the 2-bit type selector
+  between the type-00 continuation-bit bitfield chain, the type-01/10
+  single reserved octets, and the type-11 parameter/value-pair chain
+  with attacker-chosen per-pair identifier/value sizes, plus the
+  `MAX_EXT_FIELD_BYTES` chain caps and the offset-advance arithmetic
+  feeding the trailing dimension MBIs — the most attacker-driven control
+  flow in the crate, reached by none of the other five targets (they all
+  use the opaque-`FixHeaderField` `parse_header` or the encoder paths).
 
-All five build with `default-features = false`, so the harness
+All six build with `default-features = false`, so the harness
 exercises the framework-free standalone path and never links
 `oxideav-core`. Run:
 
@@ -232,6 +251,7 @@ cargo +nightly fuzz run roundtrip
 cargo +nightly fuzz run threshold
 cargo +nightly fuzz run dither
 cargo +nightly fuzz run polarity
+cargo +nightly fuzz run header_ext
 ```
 
 Round-1 sweep (~45 M `decode` + ~8 M `roundtrip` executions) found
@@ -255,7 +275,17 @@ feature coverage saturated at 195 features / 510 ft inside the first
 inverted-and-masked reference across every reachable
 (width, height, body-bytes) shape the fuzzer explored, and the
 per-row padding tail of the polarity-flipped plane stays zero
-regardless of input pattern.
+regardless of input pattern. Round-296 added the `header_ext` target on
+the same pattern: a 3.0 M-execution sweep (~11 s, `-max_len=512`), no
+crashes, RSS bounded at ~553 MiB, libFuzzer feature coverage saturated
+at 235 features / 578 ft — the extension-header state machine
+(`FixHeaderField` split, the four `ExtFields` type branches, the
+`MAX_EXT_FIELD_BYTES` chain caps, and the offset arithmetic feeding the
+trailing dimension MBIs) returns a `Result` and never panics / overflows
+/ reads past the slice across every reachable input shape the fuzzer
+explored, and every writer-representable decoded `ExtFields` region
+re-parses identically after `write_ext_fields`. No `src/` change was
+needed.
 
 ## Benchmarks
 
