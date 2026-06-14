@@ -85,6 +85,15 @@ are unchanged — they treat the FixHeaderField byte as opaque (the
 forward-compat lax behaviour documented above), so this is a purely
 additive entry point.
 
+For a full decode of an extension-header-bearing stream into pixels,
+`parse_wbmp_ext` (and `parse_wbmp_ext_with_limits`) route through
+`parse_header_ext` and then copy the main image data, returning a
+`WbmpImageExt { image, ext_fields }`. On a conformant Type-0 file the
+`image` is byte-identical to `parse_wbmp`'s output and `ext_fields` is
+`None`; on a non-conformant file carrying extension headers it decodes
+the real bitmap (rather than failing on the first ExtField octet
+mistaken for the width MBI) and surfaces the parsed pairs/bitfield.
+
 `parse_wbmp` (and `parse_wbmp_with_limits`) emit the on-disk
 polarity unchanged — `WbmpPixelFormat::MonoWhite`, where bit `1` is
 white. Callers that want the inverted polarity for downstream
@@ -171,7 +180,7 @@ O(1) rather than chasing the input.
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
-in [`fuzz/`](fuzz/) with six libFuzzer targets:
+in [`fuzz/`](fuzz/) with seven libFuzzer targets:
 
 * `decode` — feeds arbitrary bytes to `parse_wbmp`; the decoder must
   return a `Result` and never panic / abort / OOM. The classic overflow
@@ -240,8 +249,19 @@ in [`fuzz/`](fuzz/) with six libFuzzer targets:
   feeding the trailing dimension MBIs — the most attacker-driven control
   flow in the crate, reached by none of the other five targets (they all
   use the opaque-`FixHeaderField` `parse_header` or the encoder paths).
+* `decode_ext` — feeds arbitrary bytes to `parse_wbmp_ext`, the
+  extension-header-aware full decode path. It is the only target that
+  walks a fuzz-controlled-length `ExtFields` region and then performs
+  the pixel-body length check + verbatim row copy whose `data_offset`
+  begins past that variable region. Asserts the call always returns a
+  `Result` without panicking / overflowing / reading past the slice,
+  and that a successful decode yields exactly one packed plane whose
+  data length equals `stride * height`. Covers `decode_body`'s
+  post-ExtFields body slice index, the `total_bytes` vs. body-length
+  comparison, and the limit checks applied to dimensions read after the
+  ExtFields — none of which `header_ext` (header-only) reaches.
 
-All six build with `default-features = false`, so the harness
+All seven build with `default-features = false`, so the harness
 exercises the framework-free standalone path and never links
 `oxideav-core`. Run:
 
@@ -252,6 +272,7 @@ cargo +nightly fuzz run threshold
 cargo +nightly fuzz run dither
 cargo +nightly fuzz run polarity
 cargo +nightly fuzz run header_ext
+cargo +nightly fuzz run decode_ext
 ```
 
 Round-1 sweep (~45 M `decode` + ~8 M `roundtrip` executions) found

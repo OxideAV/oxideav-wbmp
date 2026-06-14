@@ -84,8 +84,9 @@ pub mod registry;
 pub const CODEC_ID_STR: &str = "wbmp";
 
 pub use decoder::{
-    parse_wbmp, parse_wbmp_as, parse_wbmp_as_with_limits, parse_wbmp_strict,
-    parse_wbmp_strict_with_limits, parse_wbmp_with_limits,
+    parse_wbmp, parse_wbmp_as, parse_wbmp_as_with_limits, parse_wbmp_ext,
+    parse_wbmp_ext_with_limits, parse_wbmp_strict, parse_wbmp_strict_with_limits,
+    parse_wbmp_with_limits, WbmpImageExt,
 };
 pub use encoder::{encode_wbmp, encode_wbmp_from_dither, encode_wbmp_from_threshold};
 pub use error::{Result, WbmpError};

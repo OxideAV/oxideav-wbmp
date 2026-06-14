@@ -7,6 +7,31 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Extension-header-aware decode entry points `parse_wbmp_ext` /
+  `parse_wbmp_ext_with_limits`, returning a new `WbmpImageExt`
+  (`{ image: WbmpImage, ext_fields: Option<ExtFields> }`). The prior
+  round added `parse_header_ext` (header fields only) but no decode
+  path turned an `ExtFields`-bearing stream into a `WbmpImage`: the
+  public `parse_wbmp` uses the plain four-field `parse_header`, so a
+  (non-conformant) Type-0 file carrying extension headers had its first
+  `ExtField` octet mis-read as the `Width` MBI. The new entry points
+  route through `parse_header_ext`, consuming any `ExtFields` region
+  (WAP-237 §4.4.1–§4.4.3) before reading the dimensions, then decode
+  the §4.5.1 main image data via the shared `decode_body` helper (same
+  limit checks, plane-layout computation and verbatim row copy as the
+  plain path). For a conformant Type-0 file (`FixHeaderField == 0x00`)
+  the decoded image is byte-identical to `parse_wbmp` and `ext_fields`
+  is `None`. Six new unit tests cover the conformant equivalence, image
+  decode after both a Type-11 parameter-pair region and a Type-00
+  bitfield chain, limit enforcement, truncated pixel data, and a
+  truncated ExtFields region.
+- Seventh `cargo-fuzz` target `decode_ext` driving `parse_wbmp_ext` —
+  the only target that walks a fuzz-controlled-length `ExtFields`
+  region and then performs the pixel-body length check + verbatim row
+  copy whose `data_offset` begins past that variable region. It
+  asserts the call always returns a `Result` without panicking /
+  overflowing / reading past the slice, and that a successful decode
+  yields one packed plane whose length equals `stride * height`.
 - Round-296 hardening: sixth `cargo-fuzz` target `header_ext`
   exercising the general-form header parser `parse_header_ext`
   (WAP-237 §4.4.1–§4.4.3) over arbitrary bytes. It drives the

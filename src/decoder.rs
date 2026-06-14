@@ -9,7 +9,8 @@
 //! impl wraps [`parse_wbmp`] for the `oxideav_core::Decoder` surface.
 
 use crate::error::{Result, WbmpError};
-use crate::header::{parse_header, parse_header_strict};
+use crate::ext::ExtFields;
+use crate::header::{parse_header, parse_header_ext, parse_header_strict};
 use crate::image::{PlaneLayout, WbmpImage, WbmpPixelFormat, WbmpPlane};
 use crate::limits::WbmpLimits;
 
@@ -141,28 +142,107 @@ pub fn parse_wbmp_strict_with_limits(input: &[u8], limits: &WbmpLimits) -> Resul
     parse_wbmp_inner(input, limits, true)
 }
 
+/// Decoded WBMP image paired with any parsed extension headers
+/// (`ExtFields`, WAP-237 §4.4.1–§4.4.3) found between the
+/// `FixHeaderField` and the dimensions.
+///
+/// Returned by [`parse_wbmp_ext`] / [`parse_wbmp_ext_with_limits`]. In a
+/// conformant **Type 0** file `ext_fields` is always `None` (§4.5.1
+/// fixes the `FixHeaderField` at `0x00`); the field is `Some` only for a
+/// non-conformant Type-0 producer that emitted extension headers.
+#[derive(Debug, Clone)]
+pub struct WbmpImageExt {
+    /// The decoded main image.
+    pub image: WbmpImage,
+    /// The parsed `ExtFields` region, or `None` when the
+    /// `FixHeaderField` presence flag was clear.
+    pub ext_fields: Option<ExtFields>,
+}
+
+/// Decode a WBMP file, honouring the `FixHeaderField` extension-header
+/// presence flag, using the default [`WbmpLimits`].
+///
+/// Unlike [`parse_wbmp`] — which treats the byte after the `TypeField`
+/// as a fixed one-octet `FixedHeader` and reads `Width` immediately
+/// after it — this entry point parses the header through
+/// [`parse_header_ext`]. When the `FixHeaderField` bit-7 presence flag
+/// is set, the `ExtFields` region (whose layout is selected by bits 6-5)
+/// is consumed and surfaced before `Width`/`Height` are read.
+///
+/// For a conformant Type-0 file (`FixHeaderField == 0x00`) the decoded
+/// image is byte-for-byte identical to [`parse_wbmp`] and `ext_fields`
+/// comes back `None`. The value of this path is decoding a
+/// non-conformant Type-0 file that carries extension headers: [`parse_wbmp`]
+/// would mis-read the first `ExtField` octet as the `Width` MBI, whereas
+/// this skips the `ExtFields` and lands on the real dimensions.
+pub fn parse_wbmp_ext(input: &[u8]) -> Result<WbmpImageExt> {
+    parse_wbmp_ext_with_limits(input, &WbmpLimits::default())
+}
+
+/// Extension-header-aware decode with caller-supplied [`WbmpLimits`].
+/// See [`parse_wbmp_ext`] for the extension-header semantics and
+/// [`parse_wbmp_with_limits`] for the limits semantics.
+pub fn parse_wbmp_ext_with_limits(input: &[u8], limits: &WbmpLimits) -> Result<WbmpImageExt> {
+    let header = parse_header_ext(input)?;
+    let image = decode_body(
+        input,
+        header.width,
+        header.height,
+        header.data_offset,
+        limits,
+    )?;
+    Ok(WbmpImageExt {
+        image,
+        ext_fields: header.ext_fields,
+    })
+}
+
 fn parse_wbmp_inner(input: &[u8], limits: &WbmpLimits, strict: bool) -> Result<WbmpImage> {
     let header = if strict {
         parse_header_strict(input)?
     } else {
         parse_header(input)?
     };
+    decode_body(
+        input,
+        header.width,
+        header.height,
+        header.data_offset,
+        limits,
+    )
+}
 
-    if header.width > limits.max_width {
+/// Decode the main image data given an already-parsed `(width, height,
+/// data_offset)`. Shared by the plain header path
+/// ([`parse_wbmp_inner`]) and the extension-header-aware path
+/// ([`parse_wbmp_ext_with_limits`]) so the limit checks, plane-layout
+/// computation and verbatim row copy stay in one place.
+///
+/// `data_offset` is the byte index of the first main-image-data octet,
+/// i.e. immediately past `Height` (and past any `ExtFields` the caller
+/// already consumed).
+fn decode_body(
+    input: &[u8],
+    width: u32,
+    height: u32,
+    data_offset: usize,
+    limits: &WbmpLimits,
+) -> Result<WbmpImage> {
+    if width > limits.max_width {
         return Err(WbmpError::limit_exceeded(format!(
             "WBMP: width {} exceeds max_width {}",
-            header.width, limits.max_width
+            width, limits.max_width
         )));
     }
-    if header.height > limits.max_height {
+    if height > limits.max_height {
         return Err(WbmpError::limit_exceeded(format!(
             "WBMP: height {} exceeds max_height {}",
-            header.height, limits.max_height
+            height, limits.max_height
         )));
     }
 
-    let layout = PlaneLayout::new(header.width, header.height)
-        .map_err(|msg| WbmpError::invalid(msg.to_string()))?;
+    let layout =
+        PlaneLayout::new(width, height).map_err(|msg| WbmpError::invalid(msg.to_string()))?;
 
     if layout.total_bytes > limits.max_pixel_bytes {
         return Err(WbmpError::limit_exceeded(format!(
@@ -171,7 +251,7 @@ fn parse_wbmp_inner(input: &[u8], limits: &WbmpLimits, strict: bool) -> Result<W
         )));
     }
 
-    let body = &input[header.data_offset..];
+    let body = &input[data_offset..];
     if body.len() < layout.total_bytes {
         return Err(WbmpError::invalid(format!(
             "WBMP: pixel data truncated (need {} bytes, got {})",
@@ -186,8 +266,8 @@ fn parse_wbmp_inner(input: &[u8], limits: &WbmpLimits, strict: bool) -> Result<W
     let data = body[..layout.total_bytes].to_vec();
 
     Ok(WbmpImage {
-        width: header.width,
-        height: header.height,
+        width,
+        height,
         pixel_format: WbmpPixelFormat::MonoWhite,
         planes: vec![WbmpPlane {
             stride: layout.stride,
@@ -303,6 +383,7 @@ fn invert_plane_in_place(image: &mut WbmpImage) {
 mod tests {
     use super::*;
     use crate::header::write_header;
+    use crate::mbi::write_mbi_u32;
 
     #[test]
     fn parse_minimal_1x1_white() {
@@ -652,6 +733,107 @@ mod tests {
         let buf = [0x01u8, 0x00, 0x08, 0x08];
         let err = parse_wbmp_strict(&buf).unwrap_err();
         assert!(matches!(err, WbmpError::Unsupported(_)), "{err:?}");
+    }
+
+    // --- parse_wbmp_ext (extension-header-aware decode) tests. ---
+
+    #[test]
+    fn parse_ext_conformant_type0_matches_plain_decode() {
+        // FixHeaderField = 0x00 → no ExtFields. The ext-aware decode
+        // must produce the identical image and report ext_fields None.
+        let mut buf = Vec::new();
+        write_header(11, 1, &mut buf);
+        buf.push(0b1010_1100);
+        buf.push(0b1110_0000);
+        let plain = parse_wbmp(&buf).unwrap();
+        let ext = parse_wbmp_ext(&buf).unwrap();
+        assert_eq!(ext.image.width, plain.width);
+        assert_eq!(ext.image.height, plain.height);
+        assert_eq!(ext.image.pixel_format, plain.pixel_format);
+        assert_eq!(ext.image.planes[0].stride, plain.planes[0].stride);
+        assert_eq!(ext.image.planes[0].data, plain.planes[0].data);
+        assert!(ext.ext_fields.is_none());
+    }
+
+    #[test]
+    fn parse_ext_decodes_image_after_parameter_pairs() {
+        // Non-conformant Type-0 file carrying a Type-11 ExtFields region
+        // before the dimensions. parse_wbmp would mis-read the
+        // ParameterHeader octet as the Width MBI; parse_wbmp_ext must
+        // skip the ExtFields and decode the real 8x1 image.
+        use crate::ext::{write_ext_fields, ExtFields, Parameter};
+        let mut buf = Vec::new();
+        write_mbi_u32(0, &mut buf); // Type = 0
+        buf.push(0b1110_0000); // FixHeaderField: ext follow, type 11
+        let ext = ExtFields::ParameterPairs11(vec![Parameter {
+            identifier: b"id".to_vec(),
+            value: b"v".to_vec(),
+        }]);
+        write_ext_fields(&ext, &mut buf).unwrap();
+        write_mbi_u32(8, &mut buf); // Width = 8
+        write_mbi_u32(1, &mut buf); // Height = 1
+        buf.push(0b1010_1010); // one body byte (8x1 = 1 byte/row)
+
+        let parsed = parse_wbmp_ext(&buf).unwrap();
+        assert_eq!(parsed.image.width, 8);
+        assert_eq!(parsed.image.height, 1);
+        assert_eq!(parsed.image.planes[0].data, [0b1010_1010]);
+        assert_eq!(parsed.image.pixel_format, WbmpPixelFormat::MonoWhite);
+        assert_eq!(parsed.ext_fields, Some(ext));
+    }
+
+    #[test]
+    fn parse_ext_decodes_image_after_bitfield00_chain() {
+        use crate::ext::{write_ext_fields, ExtFields};
+        let mut buf = Vec::new();
+        write_mbi_u32(0, &mut buf); // Type = 0
+        buf.push(0b1000_0000); // FixHeaderField: ext follow, type 00
+        let ext = ExtFields::Bitfield00(vec![0x01, 0x42]);
+        write_ext_fields(&ext, &mut buf).unwrap();
+        write_mbi_u32(4, &mut buf); // Width = 4
+        write_mbi_u32(2, &mut buf); // Height = 2
+        buf.push(0b1100_0000); // row 0 (4px in 1 byte)
+        buf.push(0b0011_0000); // row 1
+
+        let parsed = parse_wbmp_ext(&buf).unwrap();
+        assert_eq!(parsed.image.width, 4);
+        assert_eq!(parsed.image.height, 2);
+        assert_eq!(parsed.image.planes[0].data, [0b1100_0000, 0b0011_0000]);
+        assert_eq!(parsed.ext_fields, Some(ext));
+    }
+
+    #[test]
+    fn parse_ext_enforces_limits() {
+        // Conformant header but dimensions blow the default cap — the
+        // ext-aware path must still apply WbmpLimits via decode_body.
+        let mut buf = Vec::new();
+        write_header(32_000, 1, &mut buf);
+        let err = parse_wbmp_ext(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::LimitExceeded(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_ext_truncated_pixel_data_errors() {
+        // ExtFields parse fine, dimensions fine, but the body is short.
+        let mut buf = Vec::new();
+        write_header(16, 1, &mut buf); // needs 2 body bytes
+        buf.push(0x00); // only 1
+        let err = parse_wbmp_ext(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_ext_rejects_truncated_ext_region() {
+        // FixHeaderField says ExtFields follow (type 00) but the
+        // continuation bit is set with no terminating octet → the body
+        // never starts. Must error, not panic.
+        let buf = [
+            0x00u8,      // Type = 0
+            0b1000_0000, // FixHeaderField: ext follow, type 00
+            0x80,        // bitfield octet with continuation bit, stream ends
+        ];
+        let err = parse_wbmp_ext(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
     }
 
     #[test]

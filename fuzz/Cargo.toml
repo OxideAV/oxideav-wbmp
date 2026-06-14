@@ -119,3 +119,9 @@ name = "header_ext"
 path = "fuzz_targets/header_ext.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "decode_ext"
+path = "fuzz_targets/decode_ext.rs"
+test = false
+doc = false
