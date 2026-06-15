@@ -127,6 +127,46 @@ default-on `registry` feature, setting
 `CodecParameters` handed to the framework decoder selects the same
 behaviour through the `Decoder` trait.
 
+## Animated sub-images
+
+WAP-237 §4.2 defines the full image-data grammar as
+`Image-data = Main-image 0*15Animated-image`, and §4.5.1 states the
+stream "can have at most 15 animated images following the main image."
+Each animated sub-image is a bitmap "formed according to image data
+structure specified by the TypeField" — for Type 0 that is an
+identically-dimensioned packed 1-bit plane carried with **no per-frame
+header**: the single header `Width`/`Height` govern every frame, so each
+sub-image occupies exactly `stride * height` bytes immediately after the
+previous one.
+
+`parse_wbmp_frames` (and `parse_wbmp_frames_with_limits`) decode the main
+image plus any trailing sub-images into a `WbmpAnimation`:
+
+```rust
+use oxideav_wbmp::parse_wbmp_frames;
+let anim = parse_wbmp_frames(&bytes)?;
+// anim.frames[0] is the main image; anim.frames[1..] the animated
+// sub-images in stream order.
+if anim.is_animated() {
+    println!("{} animated sub-images", anim.animated_count());
+}
+let main = anim.main_image(); // frame 0 as a standalone WbmpImage
+```
+
+The decoder greedily consumes each following `stride * height` chunk as a
+sub-image until either fewer than one full frame of bytes remain (the
+trailing run is then treated as ignorable padding, matching the
+single-frame path's tolerance of trailing bytes) or the §4.5.1 cap of
+`MAX_ANIMATED_IMAGES` (15) animated frames is reached. The per-frame
+`WbmpLimits` dimension / pixel-byte checks reuse the single-frame guards,
+so an over-sized header is rejected before any frame is allocated. On a
+non-animated WBMP the returned `frames` holds exactly one plane,
+byte-identical to `parse_wbmp`'s output. WAP-237 defines no animation
+timing parameters ("It is User Agent dependent how those animated images
+are processed"), so the crate surfaces the raw frame planes and leaves
+presentation timing to the caller. The single-frame `parse_wbmp` entry
+point is unchanged.
+
 ## Encode
 
 [`encode_wbmp`] takes an already-packed mono plane (1 bit per pixel,
@@ -350,6 +390,11 @@ integration tests are framework-only — the standalone build
   for greyscale / colour bitmaps but never published a normative
   encoding, and no public devices shipped non-Type-0 content. Other
   Type values raise `WbmpError::Unsupported`.
+* **Animation timing.** The animated sub-image *frames* are decoded
+  (see [Animated sub-images](#animated-sub-images)), but WAP-237 defines
+  no normative animation timing parameters — §4.5.1 leaves it "User
+  Agent dependent how those animated images are processed" — so the
+  crate surfaces the raw frame planes and does not impose a frame rate.
 
 ## License
 

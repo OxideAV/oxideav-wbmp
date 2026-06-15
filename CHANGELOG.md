@@ -7,6 +7,30 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Animated sub-image decoding (WAP-237 §4.2 / §4.5.1). The §4.2 BNF is
+  `Image-data = Main-image 0*15Animated-image` and §4.5.1 states *"The
+  WBMP image can have at most 15 animated images following the main
+  image."* Each animated sub-image is a bitmap "formed according to image
+  data structure specified by the TypeField" — for Type 0 that is an
+  identically-dimensioned packed 1-bit plane (no per-frame header; the
+  single header `Width`/`Height` govern every frame), so each occupies
+  exactly `stride * height` bytes. New `parse_wbmp_frames` /
+  `parse_wbmp_frames_with_limits` entry points return a `WbmpAnimation`
+  carrying the main image plus any trailing frames (`frames[0]` is the
+  main image; `frames[1..]` the animated sub-images in stream order),
+  capped at `MAX_ANIMATED_IMAGES` (15) animated frames per §4.5.1. A
+  trailing run shorter than one full frame is treated as ignorable
+  padding (matching the existing `parse_wbmp` posture toward trailing
+  bytes), and the per-frame `WbmpLimits` checks reuse the same
+  dimension / pixel-byte guards as the single-frame path. `WbmpAnimation`
+  exposes `animated_count`, `is_animated` and `main_image` helpers. The
+  existing single-frame `parse_wbmp` is unchanged. Eleven new unit tests
+  in `src/decoder.rs` cover single-frame equivalence, multi-frame decode,
+  multi-byte-row frames, partial-trailing-run handling, the §4.5.1
+  frame-count cap, truncated-main / non-zero-type / limit-exceeded error
+  paths, unbounded-limit large-frame decode, and a fuzz sweep. New
+  `parse_wbmp_frames`, `parse_wbmp_frames_with_limits`, `WbmpAnimation`
+  and `MAX_ANIMATED_IMAGES` re-exported from the crate root.
 - Shortest-encoding MBI conformance on the strict decode path
   (WAP-237 §4.3.1). The spec is explicit: *"The unsigned integer MUST
   be encoded in the smallest encoding possible. In other words, the

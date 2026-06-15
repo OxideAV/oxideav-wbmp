@@ -93,6 +93,75 @@ fn image_to_video_frame(image: WbmpImage) -> VideoFrame {
     }
 }
 
+/// Maximum number of animated sub-images that may follow the main
+/// image in a WBMP stream (WAP-237 §4.2, §4.5.1: "The WBMP image can
+/// have at most 15 animated images following the main image").
+///
+/// The total frame count returned by [`parse_wbmp_frames`] is therefore
+/// at most `1 + MAX_ANIMATED_IMAGES == 16` (the main image plus up to 15
+/// animated sub-images).
+pub const MAX_ANIMATED_IMAGES: usize = 15;
+
+/// A decoded WBMP stream including any animated sub-images that follow
+/// the main image (WAP-237 §4.2 / §4.5.1).
+///
+/// The §4.2 BNF is `Image-data = Main-image 0*15Animated-image`, with
+/// `Animated-image = *byte` "Bitmap formed according to image data
+/// structure specified by the TypeField". For WBMP Type 0 that means
+/// every animated sub-image is an identically-dimensioned packed
+/// 1-bit-per-pixel plane (no per-frame header — the single header
+/// `Width`/`Height` govern all frames), so each occupies exactly
+/// `stride * height` bytes. The §4.5.1 cap is 15 animated images, so
+/// `frames` holds 1..=16 planes: index 0 is the main image, indices
+/// 1.. are the animated sub-images in stream order.
+///
+/// Returned by [`parse_wbmp_frames`] / [`parse_wbmp_frames_with_limits`].
+/// "It is User Agent dependent how those animated images are processed"
+/// (§4.5.1) — this crate surfaces the raw frame planes and leaves
+/// presentation timing to the caller, since WAP-237 defines no animation
+/// timing parameters.
+#[derive(Debug, Clone)]
+pub struct WbmpAnimation {
+    /// Picture width in pixels (shared by every frame).
+    pub width: u32,
+    /// Picture height in pixels (shared by every frame).
+    pub height: u32,
+    /// Pixel layout the planes carry — always [`WbmpPixelFormat::MonoWhite`]
+    /// from this entry point (the on-disk polarity).
+    pub pixel_format: WbmpPixelFormat,
+    /// One packed plane per frame: index 0 is the main image, indices
+    /// `1..` are the animated sub-images in stream order. Always at
+    /// least one element (the main image); at most
+    /// `1 + MAX_ANIMATED_IMAGES`.
+    pub frames: Vec<WbmpPlane>,
+}
+
+impl WbmpAnimation {
+    /// Number of animated sub-images following the main image (i.e.
+    /// `frames.len() - 1`). `0` for a single-frame (non-animated) WBMP.
+    pub fn animated_count(&self) -> usize {
+        self.frames.len() - 1
+    }
+
+    /// `true` when the stream carries at least one animated sub-image.
+    pub fn is_animated(&self) -> bool {
+        self.frames.len() > 1
+    }
+
+    /// View the main image (frame 0) as a standalone [`WbmpImage`],
+    /// discarding any animated sub-images. Equivalent to what
+    /// [`parse_wbmp`] returns for the same input.
+    pub fn main_image(&self) -> WbmpImage {
+        WbmpImage {
+            width: self.width,
+            height: self.height,
+            pixel_format: self.pixel_format,
+            planes: vec![self.frames[0].clone()],
+            pts: None,
+        }
+    }
+}
+
 /// Decode a complete WBMP file (Type 0 only) into a [`WbmpImage`]
 /// using the default [`WbmpLimits`].
 ///
@@ -194,6 +263,109 @@ pub fn parse_wbmp_ext_with_limits(input: &[u8], limits: &WbmpLimits) -> Result<W
     Ok(WbmpImageExt {
         image,
         ext_fields: header.ext_fields,
+    })
+}
+
+/// Decode a WBMP stream into its main image **and** any animated
+/// sub-images that follow it (WAP-237 §4.2 / §4.5.1), using the default
+/// [`WbmpLimits`].
+///
+/// WAP-237 defines `Image-data = Main-image 0*15Animated-image`: after
+/// the single four-field header, the main image's `stride * height`
+/// packed bytes are followed by 0..15 further packed bitmaps of the
+/// **same** dimensions (there is no per-frame header — the lone header
+/// `Width`/`Height` apply to every frame). This entry point reads the
+/// main image, then greedily consumes each following `stride * height`
+/// chunk as an animated sub-image until either fewer than one full frame
+/// of bytes remain or the §4.5.1 cap of [`MAX_ANIMATED_IMAGES`] animated
+/// frames is reached.
+///
+/// A trailing run shorter than one full frame is treated as ignorable
+/// padding (matching the single-frame [`parse_wbmp`], which already
+/// tolerates trailing bytes past the main image). A conformant
+/// single-frame WBMP therefore yields a [`WbmpAnimation`] whose `frames`
+/// holds exactly one plane, byte-identical to [`parse_wbmp`]'s output.
+///
+/// Errors mirror [`parse_wbmp`]: [`WbmpError::Unsupported`] for a
+/// non-zero Type, [`WbmpError::InvalidData`] for a truncated header /
+/// MBI overflow / a main image shorter than `stride * height`, and
+/// [`WbmpError::LimitExceeded`] when the per-frame dimensions or
+/// pixel-data size exceed `limits`.
+pub fn parse_wbmp_frames(input: &[u8]) -> Result<WbmpAnimation> {
+    parse_wbmp_frames_with_limits(input, &WbmpLimits::default())
+}
+
+/// Animated-aware decode with caller-supplied [`WbmpLimits`]. See
+/// [`parse_wbmp_frames`] for the animation semantics and
+/// [`parse_wbmp_with_limits`] for the limits semantics.
+///
+/// The [`WbmpLimits::max_pixel_bytes`] cap is applied **per frame**
+/// (each animated sub-image is the same size as the main image), so a
+/// stream cannot exceed `max_pixel_bytes` for any single plane regardless
+/// of how many frames it carries. The §4.5.1 frame-count ceiling of
+/// [`MAX_ANIMATED_IMAGES`] bounds the total work independently of the
+/// byte budget.
+pub fn parse_wbmp_frames_with_limits(input: &[u8], limits: &WbmpLimits) -> Result<WbmpAnimation> {
+    let header = parse_header(input)?;
+    decode_frames(
+        input,
+        header.width,
+        header.height,
+        header.data_offset,
+        limits,
+    )
+}
+
+/// Decode the main image plus any trailing animated sub-images, sharing
+/// the header `(width, height, data_offset)`. The main image's limit
+/// checks + plane-layout computation reuse [`decode_body`]; each animated
+/// sub-image is a verbatim `stride * height` chunk read from the bytes
+/// after the previous frame.
+fn decode_frames(
+    input: &[u8],
+    width: u32,
+    height: u32,
+    data_offset: usize,
+    limits: &WbmpLimits,
+) -> Result<WbmpAnimation> {
+    // The main image goes through decode_body, which applies every limit
+    // check (dimensions, pixel-byte cap, overflow guard) and the
+    // truncation check, then copies the first plane verbatim.
+    let main = decode_body(input, width, height, data_offset, limits)?;
+
+    // After decode_body succeeds, the layout is known-good and the main
+    // image consumed `layout.total_bytes` bytes starting at data_offset.
+    let layout =
+        PlaneLayout::new(width, height).map_err(|msg| WbmpError::invalid(msg.to_string()))?;
+
+    let mut frames = Vec::with_capacity(1);
+    frames.push(main.planes.into_iter().next().expect("main image plane"));
+
+    // A zero-byte plane (width or height collapses to a 0-byte layout)
+    // can never appear here — parse_header rejects zero dimensions — so
+    // total_bytes >= 1 and the loop below always advances.
+    let mut offset = data_offset.saturating_add(layout.total_bytes);
+    while frames.len() <= MAX_ANIMATED_IMAGES {
+        let remaining = input.len().saturating_sub(offset);
+        if remaining < layout.total_bytes {
+            // Fewer than one full animated frame remains — treat the tail
+            // as ignorable padding (same posture as parse_wbmp toward
+            // trailing bytes past the main image).
+            break;
+        }
+        let end = offset + layout.total_bytes;
+        frames.push(WbmpPlane {
+            stride: layout.stride,
+            data: input[offset..end].to_vec(),
+        });
+        offset = end;
+    }
+
+    Ok(WbmpAnimation {
+        width,
+        height,
+        pixel_format: WbmpPixelFormat::MonoWhite,
+        frames,
     })
 }
 
@@ -854,6 +1026,176 @@ mod tests {
         ];
         let err = parse_wbmp_ext(&buf).unwrap_err();
         assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    // --- Animated sub-image decode tests (WAP-237 §4.2 / §4.5.1). ---
+
+    #[test]
+    fn frames_single_image_matches_parse_wbmp() {
+        // A conformant single-frame WBMP yields exactly one frame, plane
+        // byte-identical to parse_wbmp.
+        let mut buf = Vec::new();
+        write_header(11, 1, &mut buf);
+        buf.push(0b1010_1100);
+        buf.push(0b1110_0000);
+        let plain = parse_wbmp(&buf).unwrap();
+        let anim = parse_wbmp_frames(&buf).unwrap();
+        assert_eq!(anim.frames.len(), 1);
+        assert!(!anim.is_animated());
+        assert_eq!(anim.animated_count(), 0);
+        assert_eq!(anim.width, plain.width);
+        assert_eq!(anim.height, plain.height);
+        assert_eq!(anim.pixel_format, plain.pixel_format);
+        assert_eq!(anim.frames[0].stride, plain.planes[0].stride);
+        assert_eq!(anim.frames[0].data, plain.planes[0].data);
+        // main_image() reproduces the single-frame view.
+        let main = anim.main_image();
+        assert_eq!(main.planes[0].data, plain.planes[0].data);
+        assert_eq!(main.width, plain.width);
+    }
+
+    #[test]
+    fn frames_decodes_main_plus_animated_subimages() {
+        // 8×1 main image + two animated sub-images, each 1 body byte.
+        let mut buf = Vec::new();
+        write_header(8, 1, &mut buf);
+        buf.push(0b1111_0000); // main
+        buf.push(0b0000_1111); // animated frame 1
+        buf.push(0b1010_1010); // animated frame 2
+        let anim = parse_wbmp_frames(&buf).unwrap();
+        assert_eq!(anim.frames.len(), 3);
+        assert!(anim.is_animated());
+        assert_eq!(anim.animated_count(), 2);
+        assert_eq!(anim.frames[0].data, [0b1111_0000]);
+        assert_eq!(anim.frames[1].data, [0b0000_1111]);
+        assert_eq!(anim.frames[2].data, [0b1010_1010]);
+        // Frame 0 still matches the single-frame parse_wbmp (which
+        // ignores the trailing animated bytes).
+        let plain = parse_wbmp(&buf).unwrap();
+        assert_eq!(anim.frames[0].data, plain.planes[0].data);
+    }
+
+    #[test]
+    fn frames_multibyte_rows_animated() {
+        // 11×2 → stride 2, total_bytes 4 per frame. Main + 1 animated.
+        let mut buf = Vec::new();
+        write_header(11, 2, &mut buf);
+        let main = [0xAC, 0xE0, 0x53, 0x00];
+        let f1 = [0x12, 0x80, 0x34, 0x40];
+        buf.extend_from_slice(&main);
+        buf.extend_from_slice(&f1);
+        let anim = parse_wbmp_frames(&buf).unwrap();
+        assert_eq!(anim.frames.len(), 2);
+        assert_eq!(anim.frames[0].stride, 2);
+        assert_eq!(anim.frames[0].data, main);
+        assert_eq!(anim.frames[1].data, f1);
+    }
+
+    #[test]
+    fn frames_partial_trailing_run_is_ignored() {
+        // 8×1 main + 2 full animated frames + 0 stray bytes that don't
+        // make a full frame (stride*height = 1 here, so use a 11×1 image
+        // where a single stray byte is < the 2-byte frame size).
+        let mut buf = Vec::new();
+        write_header(11, 1, &mut buf); // stride 2, frame = 2 bytes
+        buf.extend_from_slice(&[0xAC, 0xE0]); // main
+        buf.extend_from_slice(&[0x12, 0x80]); // animated frame 1
+        buf.push(0x77); // a single stray byte — < one full frame
+        let anim = parse_wbmp_frames(&buf).unwrap();
+        assert_eq!(anim.frames.len(), 2);
+        assert_eq!(anim.frames[0].data, [0xAC, 0xE0]);
+        assert_eq!(anim.frames[1].data, [0x12, 0x80]);
+    }
+
+    #[test]
+    fn frames_caps_at_max_animated_images() {
+        // 8×1 main + 20 animated-frame-sized chunks. The §4.5.1 cap is
+        // 15 animated images, so the decoder must stop after 16 total
+        // frames and ignore the rest.
+        let mut buf = Vec::new();
+        write_header(8, 1, &mut buf);
+        for i in 0..=20u8 {
+            buf.push(i);
+        }
+        let anim = parse_wbmp_frames(&buf).unwrap();
+        assert_eq!(anim.frames.len(), 1 + MAX_ANIMATED_IMAGES);
+        assert_eq!(anim.animated_count(), MAX_ANIMATED_IMAGES);
+        // Frames 0..=15 carry bytes 0..=15; bytes 16..=20 are dropped.
+        for (i, frame) in anim.frames.iter().enumerate() {
+            assert_eq!(frame.data, [i as u8]);
+        }
+    }
+
+    #[test]
+    fn frames_truncated_main_image_errors() {
+        // The main image itself is short — must surface InvalidData, not
+        // silently return zero frames.
+        let mut buf = Vec::new();
+        write_header(16, 1, &mut buf); // needs 2 body bytes
+        buf.push(0xFF); // only 1
+        let err = parse_wbmp_frames(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn frames_rejects_non_zero_type() {
+        let buf = [0x01u8, 0x00, 0x08, 0x08, 0xFF];
+        let err = parse_wbmp_frames(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::Unsupported(_)), "{err:?}");
+    }
+
+    #[test]
+    fn frames_enforces_per_frame_limits() {
+        // Dimensions blow the default cap — the per-frame limit check in
+        // decode_body must fire before any frame is allocated.
+        let mut buf = Vec::new();
+        write_header(32_000, 1, &mut buf);
+        let err = parse_wbmp_frames(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::LimitExceeded(_)), "{err:?}");
+    }
+
+    #[test]
+    fn frames_with_unbounded_limits_decodes_large_main() {
+        // 20000×1 (2500 bytes/frame) blows the default width cap but is
+        // fine with unbounded limits; one main + one animated frame.
+        let mut buf = Vec::new();
+        write_header(20_000, 1, &mut buf);
+        buf.extend_from_slice(&[0xAAu8; 2500]); // main
+        buf.extend_from_slice(&[0x55u8; 2500]); // animated frame 1
+        assert!(matches!(
+            parse_wbmp_frames(&buf).unwrap_err(),
+            WbmpError::LimitExceeded(_)
+        ));
+        let anim = parse_wbmp_frames_with_limits(&buf, &WbmpLimits::unbounded()).unwrap();
+        assert_eq!(anim.frames.len(), 2);
+        assert_eq!(anim.frames[0].data, vec![0xAAu8; 2500]);
+        assert_eq!(anim.frames[1].data, vec![0x55u8; 2500]);
+    }
+
+    #[test]
+    fn fuzz_frames_never_panic() {
+        // Adversarial inputs to the animated-frame path must return a
+        // Result, never panic / over-read / OOM.
+        for a in 0u8..=255 {
+            for b in 0u8..=255 {
+                let _ = parse_wbmp_frames(&[a, b]);
+            }
+        }
+        let mut seed: u64 = 0x0BAD_F00D_DEAD_C0DE;
+        for _ in 0..4096 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let len = 1 + (seed as usize) % 40;
+            let mut buf = vec![0u8; len];
+            for byte in buf.iter_mut() {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                *byte = seed as u8;
+            }
+            let _ = parse_wbmp_frames(&buf);
+        }
     }
 
     #[test]

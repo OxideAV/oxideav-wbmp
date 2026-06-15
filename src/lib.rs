@@ -38,6 +38,9 @@
 //!   [`WbmpPixelFormat::MonoBlack`]); the polarity flip happens
 //!   in-place during decode and padding bits are re-zeroed to keep
 //!   the plane well-formed.
+//! * [`parse_wbmp_frames`] — bytes → [`WbmpAnimation`], the main image
+//!   plus any animated sub-images that follow it (WAP-237 §4.2 /
+//!   §4.5.1: up to 15 same-dimension trailing frames).
 //! * [`encode_wbmp`] — `(width, height, packed_bits)` → bytes.
 //! * [`encode_wbmp_from_threshold`] — `(width, height, gray, threshold)` → bytes.
 //! * [`encode_wbmp_from_dither`] — `(width, height, gray)` → bytes,
@@ -85,8 +88,9 @@ pub const CODEC_ID_STR: &str = "wbmp";
 
 pub use decoder::{
     parse_wbmp, parse_wbmp_as, parse_wbmp_as_with_limits, parse_wbmp_ext,
-    parse_wbmp_ext_with_limits, parse_wbmp_strict, parse_wbmp_strict_with_limits,
-    parse_wbmp_with_limits, WbmpImageExt,
+    parse_wbmp_ext_with_limits, parse_wbmp_frames, parse_wbmp_frames_with_limits,
+    parse_wbmp_strict, parse_wbmp_strict_with_limits, parse_wbmp_with_limits, WbmpAnimation,
+    WbmpImageExt, MAX_ANIMATED_IMAGES,
 };
 pub use encoder::{encode_wbmp, encode_wbmp_from_dither, encode_wbmp_from_threshold};
 pub use error::{Result, WbmpError};
