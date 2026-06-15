@@ -193,7 +193,9 @@ O(1) rather than chasing the input.
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
-in [`fuzz/`](fuzz/) with seven libFuzzer targets:
+in [`fuzz/`](fuzz/) with seven libFuzzer targets, all crash-free under
+sustained sweeps with bounded RSS (the allocation guards hold against
+adversarial headers):
 
 * `decode` — feeds arbitrary bytes to `parse_wbmp`; the decoder must
   return a `Result` and never panic / abort / OOM. The classic overflow
@@ -260,8 +262,7 @@ in [`fuzz/`](fuzz/) with seven libFuzzer targets:
   with attacker-chosen per-pair identifier/value sizes, plus the
   `MAX_EXT_FIELD_BYTES` chain caps and the offset-advance arithmetic
   feeding the trailing dimension MBIs — the most attacker-driven control
-  flow in the crate, reached by none of the other five targets (they all
-  use the opaque-`FixHeaderField` `parse_header` or the encoder paths).
+  flow in the crate.
 * `decode_ext` — feeds arbitrary bytes to `parse_wbmp_ext`, the
   extension-header-aware full decode path. It is the only target that
   walks a fuzz-controlled-length `ExtFields` region and then performs
@@ -288,39 +289,6 @@ cargo +nightly fuzz run header_ext
 cargo +nightly fuzz run decode_ext
 ```
 
-Round-1 sweep (~45 M `decode` + ~8 M `roundtrip` executions) found
-no crashes; RSS stayed under ~530 MiB throughout, confirming the
-allocation guards hold against adversarial headers. Round-7 added the
-`threshold` target and ran a 60-second smoke sweep: 1.15 M executions,
-no crashes, RSS bounded at ~471 MiB, libFuzzer coverage saturated at
-319 features / 1630 ft within the first ~5 s — the encode-side
-arithmetic and per-row indexing are panic-free across every reachable
-input shape the fuzzer explored. Round-9 added the `dither` target on
-the same pattern: 60-second smoke sweep, no crashes, RSS bounded under
-~500 MiB, the Floyd–Steinberg accumulator's `saturating_add` clamps
-hold across every reachable input shape the fuzzer explored and the
-saturated-input agreement against `encode_wbmp_from_threshold(.., 128)`
-holds byte-for-byte on every clamped-to-{0,255} probe. Round-11 added
-the `polarity` target on the same pattern: 60-second smoke sweep,
-8.3 M executions, no crashes, RSS bounded at ~443 MiB, libFuzzer
-feature coverage saturated at 195 features / 510 ft inside the first
-~5 s — the in-place bit-inversion + per-row padding-mask in
-`parse_wbmp_as(MonoBlack)` produces byte-identical planes against the
-inverted-and-masked reference across every reachable
-(width, height, body-bytes) shape the fuzzer explored, and the
-per-row padding tail of the polarity-flipped plane stays zero
-regardless of input pattern. Round-296 added the `header_ext` target on
-the same pattern: a 3.0 M-execution sweep (~11 s, `-max_len=512`), no
-crashes, RSS bounded at ~553 MiB, libFuzzer feature coverage saturated
-at 235 features / 578 ft — the extension-header state machine
-(`FixHeaderField` split, the four `ExtFields` type branches, the
-`MAX_EXT_FIELD_BYTES` chain caps, and the offset arithmetic feeding the
-trailing dimension MBIs) returns a `Result` and never panics / overflows
-/ reads past the slice across every reachable input shape the fuzzer
-explored, and every writer-representable decoded `ExtFields` region
-re-parses identically after `write_ext_fields`. No `src/` change was
-needed.
-
 ## Benchmarks
 
 A Criterion suite in [`benches/`](benches/) covers the three hot paths
@@ -345,21 +313,14 @@ cargo bench -p oxideav-wbmp --bench encode
 cargo bench -p oxideav-wbmp --bench roundtrip
 ```
 
-Round-1 numbers on an Apple M1 Pro (release, single core) for context:
-decode tops out around 71 GiB/s on the 2048×2048 fixture (memory-copy
-bound), encode at 60 GiB/s on the 1024×1024 fixture, end-to-end
-roundtrip at 22 GiB/s on 1024×1024. Round-5 pushed the
-`encode_wbmp_from_threshold` path to ~10 GiB/s on the 320×240 Gray8
-fixture by replacing the per-pixel `|= 1 << k` read-modify-write loop
-with a packed eight-comparisons-per-output-byte loop that lets the
-codegen unroll the inner step cleanly. Round-10 applied the same
-accumulator-flush pattern to `encode_wbmp_from_dither`'s per-row inner
-loop (~140 → ~142 MiB/s on the same 320×240 fixture; the dither path
-is dominated by the inherently-sequential Floyd–Steinberg residual
-diffusion, so the headline number stays an order of magnitude below
-the threshold path, but the structural alignment removes one
-read-modify-write per pixel and matches the threshold path's
-per-byte-store granularity).
+Indicative numbers on an Apple M1 Pro (release, single core): decode
+tops out around 71 GiB/s on the 2048×2048 fixture (memory-copy bound),
+encode at 60 GiB/s on the 1024×1024 fixture, end-to-end roundtrip at
+22 GiB/s on 1024×1024, and `encode_wbmp_from_threshold` at ~10 GiB/s on
+the 320×240 Gray8 fixture. The dither path is dominated by the
+inherently-sequential Floyd–Steinberg residual diffusion, so its
+headline throughput stays an order of magnitude below the threshold
+path.
 
 ## Framework trait surface
 
@@ -379,13 +340,17 @@ opens a `WbmpDemuxer` / `WbmpMuxer` pair via
 single-packet container; confirms the muxer rejects audio and
 multi-stream inputs; and walks `register_codecs` to assert
 `CodecCapabilities` advertises `MonoWhite`, `MonoBlack` and `Gray8`
-as accepted pixel formats with `intra_only` + `lossless` set. Twenty
-new integration tests, all framework-only — the standalone build
+as accepted pixel formats with `intra_only` + `lossless` set. These
+integration tests are framework-only — the standalone build
 (`--no-default-features`) skips them as expected.
 
-## Round 1 deferrals
+## Not supported
 
 * WBMP Type values other than `0`. Later WAP releases reserved Type 1+
   for greyscale / colour bitmaps but never published a normative
-  encoding, and no public devices shipped non-Type-0 content. If
-  someone ever produces a real Type-N fixture this can be revisited.
+  encoding, and no public devices shipped non-Type-0 content. Other
+  Type values raise `WbmpError::Unsupported`.
+
+## License
+
+MIT. See `LICENSE`.
