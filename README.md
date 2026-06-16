@@ -167,6 +167,19 @@ are processed"), so the crate surfaces the raw frame planes and leaves
 presentation timing to the caller. The single-frame `parse_wbmp` entry
 point is unchanged.
 
+`encode_wbmp_frames(width, height, &[main, anim…])` is the inverse: it
+writes the single four-field header followed by the main image plane and
+0..15 same-dimension animated sub-image planes back-to-back (no per-frame
+header, matching the §4.2 BNF). Every frame must be exactly
+`ceil(width / 8) * height` bytes — the same packed-plane shape
+`encode_wbmp` accepts. The §4.5.1 cap (`1 + MAX_ANIMATED_IMAGES == 16`
+frames total), zero dimensions, an empty frame list, and any wrong-sized
+frame all raise `WbmpError::InvalidData`. A single-element call is
+byte-for-byte identical to `encode_wbmp` with the same plane, so a
+non-animated caller can use either entry point, and an
+`encode_wbmp_frames` → `parse_wbmp_frames` round trip recovers every
+plane in stream order.
+
 ## Encode
 
 [`encode_wbmp`] takes an already-packed mono plane (1 bit per pixel,

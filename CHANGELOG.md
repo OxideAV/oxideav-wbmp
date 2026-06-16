@@ -7,6 +7,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Animated sub-image **encoding** (WAP-237 §4.2 / §4.5.1) — the inverse
+  of `parse_wbmp_frames`. New `encode_wbmp_frames(width, height, &[main,
+  anim…])` writes the single four-field header followed by the main image
+  plane and 0..15 same-dimension animated sub-image planes back-to-back
+  (no per-frame header, per the §4.2 BNF `Image-data = Main-image
+  0*15Animated-image`). Every frame must be exactly `ceil(width/8) *
+  height` bytes; the §4.5.1 cap (`1 + MAX_ANIMATED_IMAGES == 16` frames)
+  and zero-dimension / empty-list / wrong-size-frame inputs raise
+  `WbmpError::InvalidData`. A single-element call is byte-identical to
+  `encode_wbmp`, and a `encode_wbmp_frames` → `parse_wbmp_frames` round
+  trip recovers every plane in stream order. Six new unit tests in
+  `src/encoder.rs` cover single-frame equivalence, the three-frame round
+  trip (multi-byte rows / padding tail), the §4.5.1 max-accepted /
+  too-many-rejected boundary, and the empty / zero-dim / wrong-size error
+  paths. `encode_wbmp_frames` re-exported from the crate root.
 - Animated sub-image decoding (WAP-237 §4.2 / §4.5.1). The §4.2 BNF is
   `Image-data = Main-image 0*15Animated-image` and §4.5.1 states *"The
   WBMP image can have at most 15 animated images following the main

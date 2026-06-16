@@ -23,6 +23,7 @@
 //! `parse_wbmp(encode_wbmp(w, h, bits)).unwrap()` round-trips bit
 //! exactly.
 
+use crate::decoder::MAX_ANIMATED_IMAGES;
 use crate::error::{Result, WbmpError};
 use crate::header::write_header;
 #[cfg(feature = "registry")]
@@ -62,6 +63,75 @@ pub fn encode_wbmp(width: u32, height: u32, mono_bits: &[u8]) -> Result<Vec<u8>>
     let mut out = Vec::with_capacity(12 + layout.total_bytes);
     write_header(width, height, &mut out);
     out.extend_from_slice(mono_bits);
+    Ok(out)
+}
+
+/// Encode an animated WBMP Type-0 file: a main image followed by 0..15
+/// animated sub-images, all sharing the single header `width`/`height`.
+///
+/// WAP-237 §4.2 defines `Image-data = Main-image 0*15Animated-image`,
+/// where every `Animated-image` is a "Bitmap formed according to image
+/// data structure specified by the TypeField". For Type 0 that is an
+/// identically-dimensioned packed 1-bit-per-pixel plane carried with
+/// **no per-frame header** — so the wire form is one four-field header
+/// followed by every frame's `stride * height` bytes back-to-back. This
+/// is the exact inverse of [`crate::parse_wbmp_frames`].
+///
+/// `frames` must be non-empty: `frames[0]` is the main image and
+/// `frames[1..]` are the animated sub-images in presentation order.
+/// Every element must be exactly `ceil(width / 8) * height` bytes long
+/// (MSB-first packing, 1 = white, trailing row bits zero-padded), the
+/// same plane shape [`encode_wbmp`] accepts. §4.5.1 caps the stream at
+/// 15 animated images, so at most `1 + MAX_ANIMATED_IMAGES == 16`
+/// frames are accepted; more raises [`WbmpError::InvalidData`].
+///
+/// On a single-element `frames` the output is byte-for-byte identical to
+/// [`encode_wbmp`] with the same plane, so a non-animated caller can use
+/// either entry point interchangeably.
+pub fn encode_wbmp_frames(width: u32, height: u32, frames: &[&[u8]]) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(WbmpError::invalid(format!(
+            "encode_wbmp_frames: zero dimension (width={width}, height={height})"
+        )));
+    }
+    if frames.is_empty() {
+        return Err(WbmpError::invalid(
+            "encode_wbmp_frames: at least the main image frame is required",
+        ));
+    }
+    // §4.5.1: at most 15 animated sub-images follow the main image, so
+    // the total frame count must not exceed 1 + MAX_ANIMATED_IMAGES.
+    if frames.len() > 1 + MAX_ANIMATED_IMAGES {
+        return Err(WbmpError::invalid(format!(
+            "encode_wbmp_frames: {} frames exceeds the §4.5.1 maximum of {} \
+             (main image + {MAX_ANIMATED_IMAGES} animated sub-images)",
+            frames.len(),
+            1 + MAX_ANIMATED_IMAGES,
+        )));
+    }
+
+    let layout = crate::image::PlaneLayout::new(width, height)
+        .map_err(|msg| WbmpError::invalid(format!("encode_wbmp_frames: {msg}")))?;
+
+    // Every frame shares the header dimensions, so each must be exactly
+    // one packed plane. Validate up front before allocating the output.
+    for (i, frame) in frames.iter().enumerate() {
+        if frame.len() != layout.total_bytes {
+            return Err(WbmpError::invalid(format!(
+                "encode_wbmp_frames: frame {i} length {} != stride*height {}",
+                frame.len(),
+                layout.total_bytes,
+            )));
+        }
+    }
+
+    // Header (≤ 12 bytes worst case) + every frame's packed plane.
+    let body_bytes = layout.total_bytes.saturating_mul(frames.len());
+    let mut out = Vec::with_capacity(12 + body_bytes);
+    write_header(width, height, &mut out);
+    for frame in frames {
+        out.extend_from_slice(frame);
+    }
     Ok(out)
 }
 
@@ -423,7 +493,85 @@ impl Encoder for WbmpEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decoder::parse_wbmp;
+    use crate::decoder::{parse_wbmp, parse_wbmp_frames};
+
+    #[test]
+    fn frames_single_frame_matches_encode_wbmp() {
+        // A one-element frame list must produce byte-identical output to
+        // encode_wbmp with the same plane (the non-animated equivalence).
+        let bits = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+        let single = encode_wbmp(8, 8, &bits).unwrap();
+        let frames = encode_wbmp_frames(8, 8, &[&bits]).unwrap();
+        assert_eq!(single, frames);
+    }
+
+    #[test]
+    fn frames_roundtrip_three_frames() {
+        // Main image + 2 animated sub-images, 11×3 (stride 2) to also
+        // exercise the padding-tail path. Decoding must recover all three
+        // planes in stream order.
+        let f0 = [0xAA, 0xA0, 0xF0, 0xF0, 0x00, 0x00];
+        let f1 = [0x55, 0x40, 0x0F, 0x00, 0xFF, 0xE0];
+        let f2 = [0xFF, 0xE0, 0x80, 0x00, 0x42, 0x40];
+        let buf = encode_wbmp_frames(11, 3, &[&f0, &f1, &f2]).unwrap();
+
+        let anim = parse_wbmp_frames(&buf).unwrap();
+        assert_eq!(anim.width, 11);
+        assert_eq!(anim.height, 3);
+        assert!(anim.is_animated());
+        assert_eq!(anim.animated_count(), 2);
+        assert_eq!(anim.frames.len(), 3);
+        assert_eq!(anim.frames[0].data, f0);
+        assert_eq!(anim.frames[1].data, f1);
+        assert_eq!(anim.frames[2].data, f2);
+        assert_eq!(anim.frames[0].stride, 2);
+
+        // The main image alone still decodes via the single-frame path,
+        // landing byte-identically on frame 0.
+        let main = parse_wbmp(&buf).unwrap();
+        assert_eq!(main.planes[0].data, f0);
+    }
+
+    #[test]
+    fn frames_max_animated_accepted() {
+        // 1 main + 15 animated = 16 frames is the §4.5.1 maximum.
+        let plane = [0x80u8]; // 1×1
+        let frames: Vec<&[u8]> = (0..1 + MAX_ANIMATED_IMAGES).map(|_| &plane[..]).collect();
+        let buf = encode_wbmp_frames(1, 1, &frames).unwrap();
+        let anim = parse_wbmp_frames(&buf).unwrap();
+        assert_eq!(anim.frames.len(), 1 + MAX_ANIMATED_IMAGES);
+        assert_eq!(anim.animated_count(), MAX_ANIMATED_IMAGES);
+    }
+
+    #[test]
+    fn frames_too_many_rejected() {
+        // 17 frames (1 main + 16 animated) exceeds the §4.5.1 cap.
+        let plane = [0x80u8];
+        let frames: Vec<&[u8]> = (0..2 + MAX_ANIMATED_IMAGES).map(|_| &plane[..]).collect();
+        let err = encode_wbmp_frames(1, 1, &frames).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)));
+    }
+
+    #[test]
+    fn frames_empty_rejected() {
+        let err = encode_wbmp_frames(4, 4, &[]).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)));
+    }
+
+    #[test]
+    fn frames_zero_dim_rejected() {
+        assert!(encode_wbmp_frames(0, 1, &[&[]]).is_err());
+        assert!(encode_wbmp_frames(1, 0, &[&[]]).is_err());
+    }
+
+    #[test]
+    fn frames_wrong_size_frame_rejected() {
+        // 8×8 needs 8 bytes per frame; the second frame is short.
+        let good = [0u8; 8];
+        let bad = [0u8; 7];
+        let err = encode_wbmp_frames(8, 8, &[&good, &bad]).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)));
+    }
 
     #[test]
     fn roundtrip_8x8_pattern() {

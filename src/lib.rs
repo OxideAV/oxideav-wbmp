@@ -42,6 +42,9 @@
 //!   plus any animated sub-images that follow it (WAP-237 §4.2 /
 //!   §4.5.1: up to 15 same-dimension trailing frames).
 //! * [`encode_wbmp`] — `(width, height, packed_bits)` → bytes.
+//! * [`encode_wbmp_frames`] — `(width, height, &[main, anim…])` → bytes,
+//!   the inverse of [`parse_wbmp_frames`]: a main image plus up to 15
+//!   same-dimension animated sub-images (WAP-237 §4.2 / §4.5.1).
 //! * [`encode_wbmp_from_threshold`] — `(width, height, gray, threshold)` → bytes.
 //! * [`encode_wbmp_from_dither`] — `(width, height, gray)` → bytes,
 //!   running Floyd–Steinberg error-diffusion before packing so
@@ -92,7 +95,9 @@ pub use decoder::{
     parse_wbmp_strict, parse_wbmp_strict_with_limits, parse_wbmp_with_limits, WbmpAnimation,
     WbmpImageExt, MAX_ANIMATED_IMAGES,
 };
-pub use encoder::{encode_wbmp, encode_wbmp_from_dither, encode_wbmp_from_threshold};
+pub use encoder::{
+    encode_wbmp, encode_wbmp_frames, encode_wbmp_from_dither, encode_wbmp_from_threshold,
+};
 pub use error::{Result, WbmpError};
 pub use ext::{
     parse_ext_fields, write_ext_fields, ExtFieldType, ExtFields, FixHeaderField, Parameter,
