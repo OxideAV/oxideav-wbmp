@@ -246,7 +246,7 @@ O(1) rather than chasing the input.
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
-in [`fuzz/`](fuzz/) with seven libFuzzer targets, all crash-free under
+in [`fuzz/`](fuzz/) with eight libFuzzer targets, all crash-free under
 sustained sweeps with bounded RSS (the allocation guards hold against
 adversarial headers):
 
@@ -327,8 +327,28 @@ adversarial headers):
   post-ExtFields body slice index, the `total_bytes` vs. body-length
   comparison, and the limit checks applied to dimensions read after the
   ExtFields — none of which `header_ext` (header-only) reaches.
+* `frames` — exercises the animated-sub-image entry points
+  `parse_wbmp_frames` / `encode_wbmp_frames` (WAP-237 §4.2 / §4.5.1),
+  the only public surface the other seven targets never reach. Two
+  halves share one fuzz input. The **decode** half feeds arbitrary
+  bytes to `parse_wbmp_frames` and asserts the call always returns a
+  `Result` without panicking / overflowing / reading past the slice,
+  and on a successful decode that the `WbmpAnimation` is
+  self-consistent: 1..=`1 + MAX_ANIMATED_IMAGES` (16) frames, every
+  plane exactly `stride * height` bytes, the `animated_count` /
+  `is_animated` helpers agreeing with `frames.len()`, and `main_image()`
+  reproducing `frames[0]` and the single-frame `parse_wbmp` plane of the
+  same buffer. The **encode** half synthesises 1..=16 distinct
+  same-dimension packed planes, round-trips them through
+  `encode_wbmp_frames` → `parse_wbmp_frames`, and asserts every plane
+  survives byte-for-byte **in stream order** (so a frame-ordering or
+  back-to-back-layout bug surfaces as a mismatch) plus the documented
+  single-frame `encode_wbmp` byte-equivalence. Covers the §4.5.1
+  frame-count cap, the no-per-frame-header back-to-back plane layout,
+  and the trailing-run-shorter-than-a-frame ignorable-padding posture —
+  none of which the seven single-frame targets reach.
 
-All seven build with `default-features = false`, so the harness
+All eight build with `default-features = false`, so the harness
 exercises the framework-free standalone path and never links
 `oxideav-core`. Run:
 
@@ -340,6 +360,7 @@ cargo +nightly fuzz run dither
 cargo +nightly fuzz run polarity
 cargo +nightly fuzz run header_ext
 cargo +nightly fuzz run decode_ext
+cargo +nightly fuzz run frames
 ```
 
 ## Benchmarks

@@ -64,6 +64,20 @@ cargo-fuzz = true
 #                   in the crate — that the other five targets never
 #                   reach (they all use the opaque-FixHeaderField
 #                   `parse_header` / encoder paths).
+#  * `frames`     — exercise the animated-sub-image entry points
+#                   `parse_wbmp_frames` / `encode_wbmp_frames`
+#                   (WAP-237 §4.2 / §4.5.1). Decode half: feed arbitrary
+#                   bytes to `parse_wbmp_frames` and assert it returns,
+#                   never panics, and on success yields a self-consistent
+#                   `WbmpAnimation` (1..=16 frames, each exactly
+#                   `stride * height` bytes, helper agreement, `main_image`
+#                   == frame 0 == the single-frame `parse_wbmp` plane).
+#                   Encode half: synthesise 1..=16 distinct same-dimension
+#                   planes, round-trip them through
+#                   `encode_wbmp_frames` → `parse_wbmp_frames`, and assert
+#                   every plane survives byte-for-byte in stream order
+#                   (plus single-frame `encode_wbmp` equivalence). The only
+#                   target that reaches the multi-frame back-to-back layout.
 #
 # The crate is pulled in with `default-features = false` so the fuzz
 # build exercises the framework-free standalone `parse_wbmp` /
@@ -123,5 +137,11 @@ doc = false
 [[bin]]
 name = "decode_ext"
 path = "fuzz_targets/decode_ext.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "frames"
+path = "fuzz_targets/frames.rs"
 test = false
 doc = false

@@ -7,6 +7,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Eighth cargo-fuzz target `frames`, covering the animated-sub-image
+  entry points `parse_wbmp_frames` / `encode_wbmp_frames` (WAP-237 §4.2 /
+  §4.5.1) — the only public surface the prior seven targets never reach.
+  Two halves share one input: (1) the **decode** half feeds arbitrary
+  bytes to `parse_wbmp_frames` and asserts it always returns a `Result`
+  (no panic, no debug-overflow, no out-of-bounds slice), and on a
+  successful decode that the `WbmpAnimation` is self-consistent — 1..=`1 +
+  MAX_ANIMATED_IMAGES` frames, every plane exactly `stride * height`
+  bytes, `animated_count` / `is_animated` agreeing with `frames.len()`,
+  and `main_image()` == `frames[0]` == the single-frame `parse_wbmp`
+  plane of the same buffer; (2) the **encode** half synthesises 1..=16
+  distinct same-dimension packed planes from the remaining fuzz bytes,
+  round-trips them through `encode_wbmp_frames` → `parse_wbmp_frames`, and
+  asserts every plane survives byte-for-byte **in stream order** (so a
+  frame-ordering or back-to-back-layout bug surfaces as a mismatch), plus
+  the documented single-frame `encode_wbmp` byte-equivalence. Registered
+  as the `frames` bin in `fuzz/Cargo.toml` with a catalog-comment entry.
 - Animated sub-image **encoding** (WAP-237 §4.2 / §4.5.1) — the inverse
   of `parse_wbmp_frames`. New `encode_wbmp_frames(width, height, &[main,
   anim…])` writes the single four-field header followed by the main image
