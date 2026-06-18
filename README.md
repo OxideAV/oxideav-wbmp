@@ -377,6 +377,15 @@ bit boundary), 1024×1024 (mid-size wallpaper) and 2048×2048
 encoder, useful as an A/B for tracking the dither path's per-pixel
 cost separately from the threshold branch-and-set loop.
 
+A fourth bench, `frames`, covers the multi-frame (animation) path that
+the single-image benches never reach: `encode_wbmp_frames` →
+`parse_wbmp_frames` (WAP-237 §4.2 / §4.5.1, a main image plus 0..15
+same-dimension animated sub-images). It sweeps the frame count
+(96×64 × {1, 4, 16} and 320×240 × 8) so the per-frame marginal cost —
+each extra plane is one length check plus a verbatim copy — is visible
+against the fixed single-header overhead that amortises as frames are
+added.
+
 Each scenario synthesises its fixture in-process from a deterministic
 xorshift32 source (no fixture files on disk) so the harness stays
 self-contained. Run with:
@@ -385,6 +394,7 @@ self-contained. Run with:
 cargo bench -p oxideav-wbmp --bench decode
 cargo bench -p oxideav-wbmp --bench encode
 cargo bench -p oxideav-wbmp --bench roundtrip
+cargo bench -p oxideav-wbmp --bench frames
 ```
 
 Indicative numbers on an Apple M1 Pro (release, single core): decode
@@ -394,7 +404,10 @@ encode at 60 GiB/s on the 1024×1024 fixture, end-to-end roundtrip at
 the 320×240 Gray8 fixture. The dither path is dominated by the
 inherently-sequential Floyd–Steinberg residual diffusion, so its
 headline throughput stays an order of magnitude below the threshold
-path.
+path. The `frames` end-to-end roundtrip runs around 6.7 GiB/s on the
+single-frame 96×64 case and rises toward 14–18 GiB/s as the frame
+count grows (the one-time header parse amortises across the swept
+frames, leaving the per-frame copy memory-bound).
 
 ## Framework trait surface
 

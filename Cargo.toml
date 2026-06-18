@@ -53,3 +53,7 @@ harness = false
 [[bench]]
 name = "roundtrip"
 harness = false
+
+[[bench]]
+name = "frames"
+harness = false

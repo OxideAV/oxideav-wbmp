@@ -7,6 +7,19 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Fourth Criterion bench `frames` (`benches/frames.rs`), covering the
+  multi-frame animation path `encode_wbmp_frames` → `parse_wbmp_frames`
+  (WAP-237 §4.2 / §4.5.1) that the `decode` / `encode` / `roundtrip`
+  benches never reach — every one of those stops at a single frame. It
+  sweeps the frame count (96×64 × {1, 4, 16} and 320×240 × 8) so the
+  per-frame marginal cost (one length check plus a verbatim plane copy)
+  is measurable against the fixed single-header overhead that amortises
+  as frames are added; throughput is byte-keyed on the summed plane size.
+  Fixtures are synthesised in-process from a deterministic xorshift32
+  source (no fixture files). Indicative Apple-M1-class numbers: ~6.7 GiB/s
+  on single-frame 96×64, rising toward 14–18 GiB/s as the frame count
+  grows. Registered as the `frames` bench in `Cargo.toml` (`harness =
+  false`).
 - Eighth cargo-fuzz target `frames`, covering the animated-sub-image
   entry points `parse_wbmp_frames` / `encode_wbmp_frames` (WAP-237 §4.2 /
   §4.5.1) — the only public surface the prior seven targets never reach.
