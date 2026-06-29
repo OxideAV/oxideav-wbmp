@@ -22,6 +22,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is unchanged; only the content-sniff false-positive rate drops.
 
 ### Added
+- `tests/ext_roundtrip.rs` — integration tests for the general-form
+  (§4.4.1) extension-header surface exercised across the crate boundary
+  (only `pub` items reachable): `encode_wbmp_ext` → `parse_wbmp_ext`
+  recovers both image and `ExtFields`; strict header parsing rejects an
+  out-of-class Type-11 value that the lax path accepts; the strict
+  ext-field write/parse pair round-trips at the public API; and
+  `Parameter::new` enforces the ABNF length-and-class bounds. Catches a
+  missing re-export or signature regression the per-module unit tests
+  (which see crate-internal items) would not.
 - `encode_wbmp_ext` + `write_header_ext` — the general-form (§4.4.1)
   writer surface, the inverse of `parse_wbmp_ext` / `parse_header_ext`.
   `encode_wbmp_ext(width, height, mono_bits, ext_fields, strict)` writes
