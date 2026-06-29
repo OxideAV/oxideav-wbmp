@@ -6,6 +6,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Tighter container content-sniff probe, motivated by the §4.1 precedence
+  rule ("the actual data format has precedence over the media type"). The
+  no-extension content path previously granted its conservative half-score
+  to any 5-byte-or-longer buffer that *parsed* as a Type-0 header — but a
+  buffer that parses as a 1×1 header and is then followed by unrelated
+  data is almost never a WBMP. The probe now additionally requires that
+  (a) the header's declared dimensions are within the default
+  `WbmpLimits` (a header decoding to a multi-thousand-pixel row from a few
+  coincidental continuation bytes is noise, not a tiny image), and (b) the
+  buffer holds at least the first full pixel row (`stride` bytes past the
+  header) — which a genuine WBMP always satisfies and a null-byte run
+  essentially never does. The extension-hint path (`PROBE_SCORE_EXTENSION`)
+  is unchanged; only the content-sniff false-positive rate drops.
+
 ### Added
 - Ninth cargo-fuzz target `header_ext_strict`, the only target reaching
   the strict character-class state machine (`parse_ext_fields_strict`)

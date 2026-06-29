@@ -19,6 +19,7 @@ use oxideav_core::{
 };
 
 use crate::header::parse_header;
+use crate::limits::WbmpLimits;
 
 pub fn register(reg: &mut ContainerRegistry) {
     reg.register_demuxer("wbmp", open_demuxer);
@@ -33,6 +34,19 @@ pub fn register(reg: &mut ContainerRegistry) {
 /// only return a low score for content that *parses* as a valid Type-0
 /// header. This avoids stealing probe wins from other formats whose
 /// payload happens to start with a few null bytes.
+///
+/// The §4.1 precedence rule ("the actual data format has precedence over
+/// the media type indicated in the `Content-Type` header") motivates a
+/// content sniff that is more than a four-byte header parse: a buffer
+/// that *parses* as a 1×1 header but is followed by megabytes of
+/// unrelated data is almost certainly not a WBMP. So the content path
+/// additionally requires that (a) the declared dimensions are within the
+/// default [`WbmpLimits`] (a header claiming a 4-billion-pixel row is
+/// noise, not a tiny real image), and (b) the buffer actually holds at
+/// least the first full pixel row (`stride` bytes past the header) — a
+/// coincidental null-byte run essentially never satisfies that, while a
+/// genuine WBMP always does. Probe buffers are truncated previews, so we
+/// only require the *first* row to be present, not the whole image.
 pub fn probe(data: &ProbeData) -> ProbeScore {
     if matches!(data.ext, Some("wbmp")) {
         return PROBE_SCORE_EXTENSION;
@@ -40,12 +54,29 @@ pub fn probe(data: &ProbeData) -> ProbeScore {
     // Content sniff: must look like a valid Type-0 header AND be at
     // least long enough to hold the smallest plausible image (1×1 →
     // 4-byte header + 1 body byte = 5 bytes).
-    if data.buf.len() >= 5 && parse_header(data.buf).is_ok() {
-        // Half of PROBE_SCORE_EXTENSION (intentionally conservative).
-        PROBE_SCORE_EXTENSION / 2
-    } else {
-        0
+    if data.buf.len() < 5 {
+        return 0;
     }
+    let Ok(header) = parse_header(data.buf) else {
+        return 0;
+    };
+    // Reject headers whose declared dimensions exceed the default limits:
+    // a plausible WBMP preview describes a real, bounded bitmap, whereas a
+    // few coincidental continuation bytes can decode to an absurd MBI.
+    let limits = WbmpLimits::default();
+    if header.width > limits.max_width || header.height > limits.max_height {
+        return 0;
+    }
+    // Require the first pixel row to be present in the (possibly
+    // truncated) probe buffer. stride = ceil(width / 8); the body starts
+    // at header.data_offset.
+    let stride = (header.width as usize).div_ceil(8);
+    let first_row_end = header.data_offset.saturating_add(stride);
+    if data.buf.len() < first_row_end {
+        return 0;
+    }
+    // Half of PROBE_SCORE_EXTENSION (intentionally conservative).
+    PROBE_SCORE_EXTENSION / 2
 }
 
 pub fn open_demuxer(

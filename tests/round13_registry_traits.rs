@@ -415,6 +415,72 @@ fn probe_rejects_buffer_shorter_than_minimum() {
     assert_eq!(probe(&data), 0);
 }
 
+#[test]
+fn probe_rejects_header_without_a_full_first_row() {
+    // A header declaring a 64-pixel-wide row (stride 8) but a buffer that
+    // holds only a few body bytes after the header. The §4.1-motivated
+    // content sniff requires the first full pixel row to be present, so a
+    // truncated-after-header buffer scores zero rather than a false win.
+    let mut buf = Vec::new();
+    {
+        use oxideav_wbmp::write_header;
+        write_header(64, 4, &mut buf); // stride = 8
+    }
+    // Only 3 body bytes — fewer than the 8 a full first row needs.
+    buf.extend_from_slice(&[0x00, 0x00, 0x00]);
+    let data = oxideav_core::ProbeData {
+        buf: &buf,
+        ext: None,
+    };
+    assert_eq!(probe(&data), 0);
+}
+
+#[test]
+fn probe_accepts_header_with_exactly_one_row_present() {
+    // Same 64×4 header, but now the buffer carries a full first row (8
+    // bytes). The probe only requires the first row in the truncated
+    // preview, so this is a content-sniff win even though the full 4-row
+    // image isn't present.
+    let mut buf = Vec::new();
+    {
+        use oxideav_wbmp::write_header;
+        write_header(64, 4, &mut buf);
+    }
+    buf.extend_from_slice(&[0xFF; 8]); // exactly one row
+    let data = oxideav_core::ProbeData {
+        buf: &buf,
+        ext: None,
+    };
+    assert_eq!(probe(&data), PROBE_SCORE_EXTENSION / 2);
+}
+
+#[test]
+fn probe_rejects_absurd_oversize_dimensions() {
+    // A header whose width MBI decodes to a value far above the default
+    // WbmpLimits max (16384). Even though the bytes "parse", such a
+    // header is noise, not a tiny real bitmap, so the content sniff
+    // declines it. Width = 100000 (3-byte MBI), height = 1.
+    let mut buf = vec![0x00u8, 0x00]; // Type 0, FixedHeader 0
+    {
+        use oxideav_wbmp::write_mbi_u32;
+        write_mbi_u32(100_000, &mut buf);
+        write_mbi_u32(1, &mut buf);
+    }
+    buf.extend_from_slice(&[0xAA; 16]); // some body bytes
+    let data = oxideav_core::ProbeData {
+        buf: &buf,
+        ext: None,
+    };
+    assert_eq!(probe(&data), 0);
+    // The extension hint still forces a win regardless of dimensions —
+    // the tightening only affects the content-sniff path.
+    let data_ext = oxideav_core::ProbeData {
+        buf: &buf,
+        ext: Some("wbmp"),
+    };
+    assert_eq!(probe(&data_ext), PROBE_SCORE_EXTENSION);
+}
+
 // ---------------------------------------------------------------------------
 // 5. Container demuxer + muxer through ContainerRegistry.
 // ---------------------------------------------------------------------------
