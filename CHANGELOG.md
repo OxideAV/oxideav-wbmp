@@ -7,6 +7,26 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Strict Type-11 extension-field character-class validation (WAP-237
+  §4.4.3 / §4.2 ABNF, RFC 2234 conventions). The normative grammar is
+  `ParameterIdentifier = 1*8CHAR` (US-ASCII `CHAR` = `%x01-7F`) and
+  `ParameterValue = 1*16(ALPHA / DIGIT)` (`A-Za-z0-9`); the lax
+  `parse_ext_fields` stores the bytes verbatim regardless of class
+  (tolerant decode), while the new `parse_ext_fields_strict` rejects any
+  identifier byte outside US-ASCII `CHAR` or value byte outside
+  `ALPHA / DIGIT` as `WbmpError::InvalidData` naming the offending byte
+  and class. `write_ext_fields_strict` is the matching writer guard — it
+  validates every Type-11 `Parameter` against the same classes before
+  emitting, so a strict writer can never produce an ABNF-violating
+  stream. Type-00 / 01 / 10 regions carry opaque reserved octets with no
+  character-class constraint, so the strict and lax paths agree
+  byte-for-byte there. New `Parameter::new` validating constructor,
+  `Parameter::validate`, and `Parameter::identifier_str` /
+  `value_str` UTF-8 accessors round out the surface. All four entry
+  points are re-exported at the crate root. (The 3-/4-bit
+  `ParameterHeader` size fields already cap the lengths at 7 / 15, so the
+  strict check adds only the character-class constraint on top of the
+  length bounds both paths enforce.)
 - Fourth Criterion bench `frames` (`benches/frames.rs`), covering the
   multi-frame animation path `encode_wbmp_frames` → `parse_wbmp_frames`
   (WAP-237 §4.2 / §4.5.1) that the `decode` / `encode` / `roundtrip`

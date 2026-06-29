@@ -100,8 +100,8 @@ pub use encoder::{
 };
 pub use error::{Result, WbmpError};
 pub use ext::{
-    parse_ext_fields, write_ext_fields, ExtFieldType, ExtFields, FixHeaderField, Parameter,
-    MAX_EXT_FIELD_BYTES,
+    parse_ext_fields, parse_ext_fields_strict, write_ext_fields, write_ext_fields_strict,
+    ExtFieldType, ExtFields, FixHeaderField, Parameter, MAX_EXT_FIELD_BYTES,
 };
 pub use header::{
     parse_header, parse_header_ext, parse_header_strict, write_header, Header, HeaderExt,
