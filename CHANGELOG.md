@@ -7,6 +7,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Ninth cargo-fuzz target `header_ext_strict`, the only target reaching
+  the strict character-class state machine (`parse_ext_fields_strict`)
+  and the strict-MBI gating on the extension-aware header path. It feeds
+  arbitrary bytes to `parse_header_ext_strict` and asserts the
+  refinement invariants: (1) the call always returns a `Result` (no
+  panic / debug-overflow / out-of-bounds), (2) **strict ⊆ lax** — every
+  strict-accepted stream is also lax-accepted and decodes byte-identically
+  (strict only rejects, never alters the decode), (3) a strict-accepted
+  Type-11 region's every parameter passes `Parameter::validate` and has
+  UTF-8 `identifier_str` / `value_str` accessors, and (4) the region
+  survives a `write_ext_fields_strict` → `parse_ext_fields_strict` round
+  trip. Crash-free + bounded-RSS over an 11M-run local sweep. Registered
+  as the `header_ext_strict` bin in `fuzz/Cargo.toml` with a catalog
+  comment.
 - `parse_header_ext_strict` — the strict counterpart to
   `parse_header_ext`, a fully-conformant general-form (§4.4.1) header
   parse. It tightens the extension-aware path the same way

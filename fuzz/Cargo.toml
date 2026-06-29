@@ -64,6 +64,19 @@ cargo-fuzz = true
 #                   in the crate — that the other five targets never
 #                   reach (they all use the opaque-FixHeaderField
 #                   `parse_header` / encoder paths).
+#  * `header_ext_strict`
+#                 — feed arbitrary bytes to `parse_header_ext_strict`, the
+#                   fully-conformant general-form header parser. On top of
+#                   the offset arithmetic `header_ext` covers, it enforces
+#                   the §4.3.1 shortest-MBI rule and the §4.4.3 Type-11
+#                   character classes (identifier = US-ASCII CHAR, value =
+#                   ALPHA / DIGIT). Asserts strict ⊆ lax (strict accepts a
+#                   subset of lax and decodes identically), a strict-
+#                   accepted Type-11 region's parameters all pass
+#                   `Parameter::validate` + have UTF-8 accessors, and the
+#                   region survives a `write_ext_fields_strict` →
+#                   `parse_ext_fields_strict` round trip. The only target
+#                   reaching the strict character-class state machine.
 #  * `frames`     — exercise the animated-sub-image entry points
 #                   `parse_wbmp_frames` / `encode_wbmp_frames`
 #                   (WAP-237 §4.2 / §4.5.1). Decode half: feed arbitrary
@@ -137,6 +150,12 @@ doc = false
 [[bin]]
 name = "decode_ext"
 path = "fuzz_targets/decode_ext.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "header_ext_strict"
+path = "fuzz_targets/header_ext_strict.rs"
 test = false
 doc = false
 

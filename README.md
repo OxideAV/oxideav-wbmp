@@ -86,14 +86,46 @@ a real shipped WBMP never carries any — but the format is defined, and
 | 11   | Sequence of `ParameterHeader ParameterIdentifier ParameterValue` pairs. The `ParameterHeader` octet is `concat-flag | 3-bit identifier-size (1-8) | 4-bit value-size (1-16)`; the identifier is a US-ASCII string, the value alphanumeric (Table 4-4). |
 
 `parse_ext_fields` decodes a region given a `FixHeaderField`;
-`write_ext_fields` is the inverse serializer. The header-level
+`write_ext_fields` is the inverse serializer.
+
+### Strict vs lax extension fields
+
+The §4.4.3 / §4.2 ABNF is normative about the Type-11 character classes:
+`ParameterIdentifier = 1*8CHAR` (US-ASCII `CHAR` = `%x01-7F`, RFC 2234
+conventions) and `ParameterValue = 1*16(ALPHA / DIGIT)` (`A-Za-z0-9`).
+The lax `parse_ext_fields` stores the parameter bytes verbatim regardless
+of their class — a tolerant decode that lets a caller inspect a
+non-conformant stream — while `parse_ext_fields_strict` rejects any
+identifier byte outside US-ASCII `CHAR` or value byte outside
+`ALPHA / DIGIT` as `WbmpError::InvalidData`, naming the offending byte and
+class. `write_ext_fields_strict` is the matching writer guard: it
+validates every Type-11 `Parameter` against the same classes before
+emitting, so a strict writer can never produce an ABNF-violating stream.
+The Type-00 / 01 / 10 reserved-octet regions carry opaque bytes with no
+character-class constraint, so the strict and lax paths agree
+byte-for-byte there. `Parameter::new` is a validating constructor (and
+`Parameter::validate` the standalone check) enforcing the same 1..=7
+identifier / 1..=15 value length-and-class bounds — the upper bounds are
+7 / 15 rather than the ABNF's 8 / 16 because the 3-/4-bit `ParameterHeader`
+size fields can encode at most that literal byte count. `identifier_str`
+/ `value_str` return the bytes as `&str` (always succeeding for an
+in-class parameter, which is by construction valid UTF-8).
+
+The header-level
 [`parse_header_ext`] returns a `HeaderExt` (width / height /
 data_offset + the decoded FixHeaderField + `Option<ExtFields>`) that
 honours the presence flag, so the decoder lands on the real
 Width/Height rather than mis-reading the first ExtField octet as the
 width MBI when a non-conformant Type-0 file carries extension headers.
 A `MAX_EXT_FIELD_BYTES` (4096) ceiling bounds pathological
-all-continuation chains. The plain `parse_header` / `parse_wbmp` paths
+all-continuation chains. `parse_header_ext_strict` is the fully-conformant
+counterpart: it reads every MBI with the §4.3.1 shortest-encoding check
+*and* routes a Type-11 region through `parse_ext_fields_strict` so its
+parameters are character-class validated. (It deliberately still accepts a
+presence-bit-set `FixHeaderField`, since handling extension headers is the
+whole reason to use the extension-aware path; the "FixHeaderField MUST be
+`0x00`, no ExtFields" Type-0 conformance check stays `parse_header_strict`.)
+The plain `parse_header` / `parse_wbmp` paths
 are unchanged — they treat the FixHeaderField byte as opaque (the
 forward-compat lax behaviour documented above), so this is a purely
 additive entry point.
@@ -246,7 +278,7 @@ O(1) rather than chasing the input.
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
-in [`fuzz/`](fuzz/) with eight libFuzzer targets, all crash-free under
+in [`fuzz/`](fuzz/) with nine libFuzzer targets, all crash-free under
 sustained sweeps with bounded RSS (the allocation guards hold against
 adversarial headers):
 
@@ -316,6 +348,22 @@ adversarial headers):
   `MAX_EXT_FIELD_BYTES` chain caps and the offset-advance arithmetic
   feeding the trailing dimension MBIs — the most attacker-driven control
   flow in the crate.
+* `header_ext_strict` — feeds arbitrary bytes to
+  `parse_header_ext_strict`, the only target reaching the strict
+  character-class state machine (`parse_ext_fields_strict`) and the
+  strict-MBI gating on the extension-aware path. Asserts the refinement
+  invariants: (a) the call always returns a `Result` (no panic /
+  debug-overflow / out-of-bounds), (b) **strict ⊆ lax** — every
+  strict-accepted stream is lax-accepted and decodes byte-identically, so
+  strict only ever rejects and never alters the decode, (c) a
+  strict-accepted Type-11 region's every parameter passes
+  `Parameter::validate` and has UTF-8 `identifier_str` / `value_str`
+  accessors, and (d) the region survives a `write_ext_fields_strict` →
+  `parse_ext_fields_strict` round trip consuming exactly the written
+  bytes. Covers the §4.4.3 ABNF character-class enforcement
+  (identifier = US-ASCII `CHAR`, value = `ALPHA / DIGIT`) and the §4.3.1
+  shortest-MBI check on the extension-aware header path — neither of which
+  the lax `header_ext` target reaches.
 * `decode_ext` — feeds arbitrary bytes to `parse_wbmp_ext`, the
   extension-header-aware full decode path. It is the only target that
   walks a fuzz-controlled-length `ExtFields` region and then performs
@@ -348,7 +396,7 @@ adversarial headers):
   and the trailing-run-shorter-than-a-frame ignorable-padding posture —
   none of which the seven single-frame targets reach.
 
-All eight build with `default-features = false`, so the harness
+All nine build with `default-features = false`, so the harness
 exercises the framework-free standalone path and never links
 `oxideav-core`. Run:
 
@@ -359,6 +407,7 @@ cargo +nightly fuzz run threshold
 cargo +nightly fuzz run dither
 cargo +nightly fuzz run polarity
 cargo +nightly fuzz run header_ext
+cargo +nightly fuzz run header_ext_strict
 cargo +nightly fuzz run decode_ext
 cargo +nightly fuzz run frames
 ```
