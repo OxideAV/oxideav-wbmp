@@ -42,6 +42,11 @@
 //!   plus any animated sub-images that follow it (WAP-237 §4.2 /
 //!   §4.5.1: up to 15 same-dimension trailing frames).
 //! * [`encode_wbmp`] — `(width, height, packed_bits)` → bytes.
+//! * [`encode_wbmp_ext`] — general-form (§4.4.1) writer, the inverse of
+//!   [`parse_wbmp_ext`]: `(width, height, packed_bits, ext_fields,
+//!   strict)` → bytes. With no `ExtFields` it equals [`encode_wbmp`];
+//!   with some it writes an extension-header-bearing stream that
+//!   round-trips through [`parse_wbmp_ext`].
 //! * [`encode_wbmp_frames`] — `(width, height, &[main, anim…])` → bytes,
 //!   the inverse of [`parse_wbmp_frames`]: a main image plus up to 15
 //!   same-dimension animated sub-images (WAP-237 §4.2 / §4.5.1).
@@ -96,7 +101,8 @@ pub use decoder::{
     WbmpImageExt, MAX_ANIMATED_IMAGES,
 };
 pub use encoder::{
-    encode_wbmp, encode_wbmp_frames, encode_wbmp_from_dither, encode_wbmp_from_threshold,
+    encode_wbmp, encode_wbmp_ext, encode_wbmp_frames, encode_wbmp_from_dither,
+    encode_wbmp_from_threshold,
 };
 pub use error::{Result, WbmpError};
 pub use ext::{
@@ -105,7 +111,7 @@ pub use ext::{
 };
 pub use header::{
     parse_header, parse_header_ext, parse_header_ext_strict, parse_header_strict, write_header,
-    Header, HeaderExt,
+    write_header_ext, Header, HeaderExt,
 };
 pub use image::{PlaneLayout, WbmpImage, WbmpPixelFormat, WbmpPlane};
 pub use limits::WbmpLimits;

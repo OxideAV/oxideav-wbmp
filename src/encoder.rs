@@ -66,6 +66,66 @@ pub fn encode_wbmp(width: u32, height: u32, mono_bits: &[u8]) -> Result<Vec<u8>>
     Ok(out)
 }
 
+/// Encode a **general-form** WBMP file (§4.4.1
+/// `TypeField FixHeaderField [ExtFields] Width Height` + pixel data) from
+/// an already-packed monochrome bit plane and an optional [`ExtFields`]
+/// region — the inverse of [`crate::parse_wbmp_ext`].
+///
+/// `mono_bits` has the same shape [`encode_wbmp`] requires: exactly
+/// `ceil(width / 8) * height` bytes, MSB-first, bit `1` = white.
+///
+/// * `ext_fields == None` writes a conformant Type-0 header
+///   (`FixHeaderField == 0x00`, no ExtFields), so the output is
+///   byte-for-byte identical to [`encode_wbmp`] and round-trips through
+///   [`parse_wbmp`](crate::parse_wbmp) as well as
+///   [`parse_wbmp_ext`](crate::parse_wbmp_ext).
+/// * `ext_fields == Some(_)` synthesises a `FixHeaderField` with the
+///   presence flag set and bits 6-5 selecting the variant type, then
+///   serialises the region before the dimensions. WBMP **Type 0**
+///   conformantly forbids extension headers (§4.5.1), so this produces a
+///   deliberately non-conformant stream — useful for interop testing
+///   against a producer that emitted them and for exercising the
+///   `parse_wbmp_ext` decode path. The result round-trips through
+///   [`parse_wbmp_ext`](crate::parse_wbmp_ext) (recovering both the image
+///   and the `ExtFields`), though **not** through the plain
+///   [`parse_wbmp`](crate::parse_wbmp) (which would mis-read the first
+///   ExtField octet as the width MBI).
+///
+/// When `strict` is set, a Type-11 region's parameter character classes
+/// are validated before emitting (per the §4.4.3 ABNF); see
+/// [`crate::ext::write_ext_fields_strict`].
+///
+/// Errors with [`WbmpError::InvalidData`] for a zero dimension, a
+/// `mono_bits` length mismatch, or an `ExtFields` region that is not
+/// writer-representable.
+pub fn encode_wbmp_ext(
+    width: u32,
+    height: u32,
+    mono_bits: &[u8],
+    ext_fields: Option<&crate::ext::ExtFields>,
+    strict: bool,
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(WbmpError::invalid(format!(
+            "encode_wbmp_ext: zero dimension (width={width}, height={height})"
+        )));
+    }
+    let layout = crate::image::PlaneLayout::new(width, height)
+        .map_err(|msg| WbmpError::invalid(format!("encode_wbmp_ext: {msg}")))?;
+    if mono_bits.len() != layout.total_bytes {
+        return Err(WbmpError::invalid(format!(
+            "encode_wbmp_ext: mono_bits length {} != stride*height {}",
+            mono_bits.len(),
+            layout.total_bytes,
+        )));
+    }
+
+    let mut out = Vec::with_capacity(12 + layout.total_bytes);
+    crate::header::write_header_ext(width, height, ext_fields, strict, &mut out)?;
+    out.extend_from_slice(mono_bits);
+    Ok(out)
+}
+
 /// Encode an animated WBMP Type-0 file: a main image followed by 0..15
 /// animated sub-images, all sharing the single header `width`/`height`.
 ///
@@ -493,7 +553,76 @@ impl Encoder for WbmpEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decoder::{parse_wbmp, parse_wbmp_frames};
+    use crate::decoder::{parse_wbmp, parse_wbmp_ext, parse_wbmp_frames};
+    use crate::ext::{ExtFields, Parameter};
+
+    #[test]
+    fn ext_none_matches_encode_wbmp() {
+        // encode_wbmp_ext with no ExtFields must be byte-identical to
+        // encode_wbmp and round-trip through plain parse_wbmp.
+        let bits = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+        let plain = encode_wbmp(8, 8, &bits).unwrap();
+        let ext = encode_wbmp_ext(8, 8, &bits, None, false).unwrap();
+        assert_eq!(plain, ext, "no-ExtFields output equals encode_wbmp");
+        let img = parse_wbmp(&ext).unwrap();
+        assert_eq!(img.planes[0].data, bits);
+    }
+
+    #[test]
+    fn ext_type11_roundtrips_through_parse_wbmp_ext() {
+        // A non-conformant Type-0 stream carrying a Type-11 parameter pair
+        // must round-trip through parse_wbmp_ext: both the image plane and
+        // the ExtFields come back intact.
+        let bits = [0xF0, 0x0F]; // a clean 16×1 plane (stride 2).
+        let region = ExtFields::ParameterPairs11(vec![
+            Parameter::new(b"k".to_vec(), b"V1").unwrap(),
+            Parameter::new(b"name".to_vec(), b"abc123").unwrap(),
+        ]);
+        let encoded = encode_wbmp_ext(16, 1, &bits, Some(&region), false).unwrap();
+        let decoded = parse_wbmp_ext(&encoded).unwrap();
+        assert_eq!(decoded.image.width, 16);
+        assert_eq!(decoded.image.height, 1);
+        assert_eq!(decoded.image.planes[0].data, bits);
+        assert_eq!(decoded.ext_fields, Some(region));
+    }
+
+    #[test]
+    fn ext_strict_rejects_out_of_class_parameter() {
+        // A Type-11 value byte outside ALPHA / DIGIT must be rejected by
+        // the strict writer; the lax writer accepts it.
+        let bits = [0x00, 0x00];
+        let bad = ExtFields::ParameterPairs11(vec![Parameter {
+            identifier: b"k".to_vec(),
+            value: b"a-b".to_vec(), // hyphen not ALPHA/DIGIT
+        }]);
+        assert!(encode_wbmp_ext(16, 1, &bits, Some(&bad), false).is_ok());
+        let err = encode_wbmp_ext(16, 1, &bits, Some(&bad), true).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn ext_bitfield00_roundtrips() {
+        let bits = [0x42];
+        let region = ExtFields::Bitfield00(vec![0x01, 0x7F, 0x00]);
+        let encoded = encode_wbmp_ext(8, 1, &bits, Some(&region), false).unwrap();
+        let decoded = parse_wbmp_ext(&encoded).unwrap();
+        assert_eq!(decoded.image.planes[0].data, bits);
+        assert_eq!(decoded.ext_fields, Some(region));
+    }
+
+    #[test]
+    fn ext_rejects_wrong_plane_length() {
+        let region = ExtFields::Reserved01(0x5A);
+        // 16×1 needs a 2-byte plane; pass 1 byte.
+        let err = encode_wbmp_ext(16, 1, &[0x00], Some(&region), false).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn ext_rejects_zero_dimension() {
+        let err = encode_wbmp_ext(0, 1, &[], None, false).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
 
     #[test]
     fn frames_single_frame_matches_encode_wbmp() {

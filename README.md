@@ -216,7 +216,17 @@ plane in stream order.
 
 [`encode_wbmp`] takes an already-packed mono plane (1 bit per pixel,
 MSB-first, 1 = white, rows padded to a byte boundary) and prepends a
-Type-0 header. [`encode_wbmp_from_threshold`] thresholds an 8-bit
+Type-0 header. [`encode_wbmp_ext`] is the general-form (§4.4.1) writer —
+the inverse of `parse_wbmp_ext`: it takes the same packed plane plus an
+optional `ExtFields` region and writes
+`TypeField FixHeaderField [ExtFields] Width Height` + the plane. With no
+`ExtFields` the output is byte-identical to `encode_wbmp`; with some it
+synthesises the matching `FixHeaderField` (presence flag set, bits 6-5
+selecting the variant type) and emits a deliberately non-conformant
+Type-0 stream (§4.5.1 forbids ext headers in Type 0) that round-trips
+through `parse_wbmp_ext`, recovering both the image and the parameters.
+Its `strict` flag validates a Type-11 region's parameter character
+classes before emitting. [`encode_wbmp_from_threshold`] thresholds an 8-bit
 grayscale buffer (one byte per pixel, no row padding) at the supplied
 cut-off and produces a complete WBMP file in one call.
 [`encode_wbmp_from_dither`] takes the same 8-bit grayscale buffer

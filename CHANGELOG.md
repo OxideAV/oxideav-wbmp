@@ -22,6 +22,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is unchanged; only the content-sniff false-positive rate drops.
 
 ### Added
+- `encode_wbmp_ext` + `write_header_ext` — the general-form (§4.4.1)
+  writer surface, the inverse of `parse_wbmp_ext` / `parse_header_ext`.
+  `encode_wbmp_ext(width, height, mono_bits, ext_fields, strict)` writes
+  `TypeField FixHeaderField [ExtFields] Width Height` + the packed plane;
+  `write_header_ext` is the header-only helper. With `ext_fields == None`
+  the output is byte-for-byte identical to `encode_wbmp` (and round-trips
+  through plain `parse_wbmp`); with `Some(_)` it synthesises a
+  `FixHeaderField` whose presence flag is set and bits 6-5 select the
+  region's variant type, producing a deliberately non-conformant Type-0
+  stream (§4.5.1 forbids ext headers in Type 0) that round-trips through
+  `parse_wbmp_ext` — recovering both the image and the `ExtFields` — for
+  interop testing against a producer that emitted them. The `strict` flag
+  validates a Type-11 region's parameter character classes before
+  emitting. This closes the encode↔decode symmetry gap: the crate could
+  already *decode* an extension-header-bearing stream but had no way to
+  *write* one.
 - Ninth cargo-fuzz target `header_ext_strict`, the only target reaching
   the strict character-class state machine (`parse_ext_fields_strict`)
   and the strict-MBI gating on the extension-aware header path. It feeds

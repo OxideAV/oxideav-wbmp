@@ -281,6 +281,66 @@ pub fn write_header(width: u32, height: u32, out: &mut Vec<u8>) {
     write_mbi_u32(height, out);
 }
 
+/// Append a **general-form** WBMP header (§4.4.1
+/// `TypeField FixHeaderField [ExtFields] Width Height`) to `out` — the
+/// inverse of [`parse_header_ext`]. Pixel data must be appended by the
+/// caller right after.
+///
+/// When `ext_fields` is `Some`, a `FixHeaderField` octet is synthesised
+/// with the bit-7 presence flag set and bits 6-5 selecting the variant's
+/// type, then the [`ExtFields`] region is serialised through
+/// [`crate::ext::write_ext_fields`] (or its strict counterpart when
+/// `strict` is set). When `ext_fields` is `None`, this writes the
+/// conformant Type-0 header (`FixHeaderField == 0x00`, no ExtFields) and
+/// is byte-for-byte identical to [`write_header`].
+///
+/// Note WBMP **Type 0** conformantly forbids extension headers (§4.5.1),
+/// so passing `Some(_)` produces a deliberately non-conformant stream —
+/// useful only for interop testing against a producer that emitted them,
+/// or to round-trip [`parse_header_ext`]'s output. The `strict` flag, when
+/// set, validates a Type-11 region's parameter character classes before
+/// emitting (it does **not** make the overall stream Type-0-conformant).
+///
+/// Errors with [`WbmpError::InvalidData`] if `width`/`height` is zero or
+/// the `ExtFields` region is not writer-representable (see
+/// [`crate::ext::write_ext_fields`]).
+pub fn write_header_ext(
+    width: u32,
+    height: u32,
+    ext_fields: Option<&ExtFields>,
+    strict: bool,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    if width == 0 || height == 0 {
+        return Err(WbmpError::invalid(format!(
+            "write_header_ext: zero dimension (width={width}, height={height})"
+        )));
+    }
+    write_mbi_u32(0, out); // Type = 0 (B/W bitmap)
+    match ext_fields {
+        None => out.push(0x00),
+        Some(ext) => {
+            // Synthesise the FixHeaderField: presence flag (bit 7) set,
+            // bits 6-5 selecting the ExtFields variant's type.
+            let type_bits: u8 = match ext {
+                ExtFields::Bitfield00(_) => 0b00,
+                ExtFields::Reserved01(_) => 0b01,
+                ExtFields::Reserved10(_) => 0b10,
+                ExtFields::ParameterPairs11(_) => 0b11,
+            };
+            out.push(0x80 | (type_bits << 5));
+            if strict {
+                crate::ext::write_ext_fields_strict(ext, out)?;
+            } else {
+                crate::ext::write_ext_fields(ext, out)?;
+            }
+        }
+    }
+    write_mbi_u32(width, out);
+    write_mbi_u32(height, out);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     // A few test literals are field-aligned to the §4.4.2 / §4.4.3
@@ -551,6 +611,59 @@ mod tests {
         write_mbi_u32(0, &mut buf); // width = 0 → invalid
         write_mbi_u32(1, &mut buf);
         let err = parse_header_ext(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    // --- write_header_ext tests. ---
+
+    #[test]
+    fn write_header_ext_none_equals_write_header() {
+        let mut a = Vec::new();
+        write_header(96, 64, &mut a);
+        let mut b = Vec::new();
+        write_header_ext(96, 64, None, false, &mut b).unwrap();
+        assert_eq!(a, b, "None ExtFields matches the plain header writer");
+    }
+
+    #[test]
+    fn write_header_ext_type11_roundtrips() {
+        use crate::ext::{ExtFields, Parameter};
+        let region =
+            ExtFields::ParameterPairs11(vec![Parameter::new(b"x".to_vec(), b"7").unwrap()]);
+        let mut buf = Vec::new();
+        write_header_ext(200, 3, Some(&region), false, &mut buf).unwrap();
+        let parsed = parse_header_ext(&buf).unwrap();
+        assert_eq!(parsed.width, 200);
+        assert_eq!(parsed.height, 3);
+        assert_eq!(parsed.ext_fields, Some(region));
+        assert!(parsed.fix_header.ext_fields_follow);
+        assert_eq!(
+            parsed.fix_header.ext_type,
+            crate::ext::ExtFieldType::ParameterPairs11
+        );
+        assert_eq!(parsed.data_offset, buf.len());
+    }
+
+    #[test]
+    fn write_header_ext_synthesises_correct_type_bits() {
+        use crate::ext::{ExtFieldType, ExtFields};
+        for (region, want) in [
+            (ExtFields::Bitfield00(vec![0x01]), ExtFieldType::Bitfield00),
+            (ExtFields::Reserved01(0x5A), ExtFieldType::Reserved01),
+            (ExtFields::Reserved10(0xA5), ExtFieldType::Reserved10),
+        ] {
+            let mut buf = Vec::new();
+            write_header_ext(8, 8, Some(&region), false, &mut buf).unwrap();
+            let parsed = parse_header_ext(&buf).unwrap();
+            assert_eq!(parsed.fix_header.ext_type, want);
+            assert_eq!(parsed.ext_fields, Some(region));
+        }
+    }
+
+    #[test]
+    fn write_header_ext_rejects_zero_dimension() {
+        let mut buf = Vec::new();
+        let err = write_header_ext(0, 1, None, false, &mut buf).unwrap_err();
         assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
     }
 
