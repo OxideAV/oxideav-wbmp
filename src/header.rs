@@ -25,7 +25,7 @@
 //! [`crate::WbmpImage`] for how the decoded plane lays out).
 
 use crate::error::{Result, WbmpError};
-use crate::ext::{parse_ext_fields, ExtFields, FixHeaderField};
+use crate::ext::{parse_ext_fields, parse_ext_fields_strict, ExtFields, FixHeaderField};
 use crate::mbi::{read_mbi_u32, read_mbi_u32_strict, write_mbi_u32};
 
 /// Decoded WBMP header — Type 0 only.
@@ -134,10 +134,52 @@ pub fn parse_header_strict(bytes: &[u8]) -> Result<Header> {
 /// * [`WbmpError::InvalidData`] for truncated/oversized MBIs, a
 ///   truncated or over-long ExtFields region, or a zero dimension.
 pub fn parse_header_ext(bytes: &[u8]) -> Result<HeaderExt> {
+    parse_header_ext_inner(bytes, false)
+}
+
+/// Strict variant of [`parse_header_ext`] — a fully-conformant
+/// general-form header parse. It tightens three checks at once:
+///
+/// * every MBI (Type, Width, Height) must obey the §4.3.1
+///   shortest-encoding `MUST NOT` (no redundant leading `0x80`);
+/// * for a Type-11 `ExtFields` region, every `ParameterIdentifier` byte
+///   must be a US-ASCII `CHAR` (`%x01-7F`) and every `ParameterValue`
+///   byte must be `ALPHA / DIGIT` (`A-Za-z0-9`) per the §4.4.3 / §4.2
+///   ABNF (this routes through [`parse_ext_fields_strict`]).
+///
+/// Note: this entry point intentionally does *not* require the
+/// FixHeaderField to be `0x00`. The whole reason to call
+/// `parse_header_ext` (over the plain [`parse_header`]) is to handle a
+/// stream that *does* carry extension headers (a FixHeaderField with the
+/// presence bit set) — a "no ExtFields allowed" check would make the
+/// extension-aware strict path contradictory. For the strict
+/// Type-0-conformant "FixHeaderField MUST be 0x00, no ExtFields" check,
+/// use [`parse_header_strict`].
+///
+/// In a conformant Type-0 file the presence flag is clear, so
+/// `ext_fields` comes back `None` and the result equals
+/// [`parse_header_strict`]'s narrowed view.
+///
+/// Errors:
+/// * [`WbmpError::Unsupported`] if the Type field is non-zero.
+/// * [`WbmpError::InvalidData`] for a non-minimal MBI, a truncated /
+///   oversized MBI, a truncated or over-long ExtFields region, an
+///   out-of-class Type-11 parameter byte, or a zero dimension.
+pub fn parse_header_ext_strict(bytes: &[u8]) -> Result<HeaderExt> {
+    parse_header_ext_inner(bytes, true)
+}
+
+fn parse_header_ext_inner(bytes: &[u8], strict: bool) -> Result<HeaderExt> {
     let mut offset = 0usize;
 
+    let read = if strict {
+        read_mbi_u32_strict
+    } else {
+        read_mbi_u32
+    };
+
     // Field 1: Type (MBI). Type 0 only.
-    let typ = read_mbi_u32(bytes, &mut offset)?;
+    let typ = read(bytes, &mut offset)?;
     if typ != 0 {
         return Err(WbmpError::unsupported(format!(
             "WBMP type {typ} (only type 0 / B/W bitmap is supported)"
@@ -152,12 +194,17 @@ pub fn parse_header_ext(bytes: &[u8]) -> Result<HeaderExt> {
     offset += 1;
 
     // Field 3 (optional): ExtFields, present iff the FixHeaderField
-    // bit-7 presence flag is set.
-    let ext_fields = parse_ext_fields(fix_header, bytes, &mut offset)?;
+    // bit-7 presence flag is set. The strict path additionally enforces
+    // the §4.4.3 Type-11 character classes.
+    let ext_fields = if strict {
+        parse_ext_fields_strict(fix_header, bytes, &mut offset)?
+    } else {
+        parse_ext_fields(fix_header, bytes, &mut offset)?
+    };
 
     // Fields 4-5: Width, Height (MBIs).
-    let width = read_mbi_u32(bytes, &mut offset)?;
-    let height = read_mbi_u32(bytes, &mut offset)?;
+    let width = read(bytes, &mut offset)?;
+    let height = read(bytes, &mut offset)?;
 
     if width == 0 || height == 0 {
         return Err(WbmpError::invalid(format!(
@@ -236,6 +283,12 @@ pub fn write_header(width: u32, height: u32, out: &mut Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
+    // A few test literals are field-aligned to the §4.4.2 / §4.4.3
+    // bitfield boundaries (FixHeaderField presence|type|reserved, or a
+    // ParameterHeader concat|ident-size|value-size) rather than uniform
+    // nibbles, so they read as the spec layouts they encode.
+    #![allow(clippy::unusual_byte_groupings)]
+
     use super::*;
 
     #[test]
@@ -499,6 +552,80 @@ mod tests {
         write_mbi_u32(1, &mut buf);
         let err = parse_header_ext(&buf).unwrap_err();
         assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    // --- parse_header_ext_strict tests. ---
+
+    #[test]
+    fn ext_strict_conformant_type0_matches_strict_header() {
+        let mut buf = Vec::new();
+        write_header(96, 64, &mut buf);
+        let narrow = parse_header_strict(&buf).unwrap();
+        let ext = parse_header_ext_strict(&buf).unwrap();
+        assert_eq!(ext.header(), narrow);
+        assert!(ext.ext_fields.is_none());
+        assert_eq!(ext.width, 96);
+        assert_eq!(ext.height, 64);
+    }
+
+    #[test]
+    fn ext_strict_accepts_conformant_type11_pair() {
+        use crate::ext::{write_ext_fields_strict, ExtFields, Parameter};
+        let mut buf = Vec::new();
+        write_mbi_u32(0, &mut buf);
+        buf.push(0b1110_0000); // ext follow, type 11
+        let ext = ExtFields::ParameterPairs11(vec![Parameter::new(b"k".to_vec(), b"V1").unwrap()]);
+        write_ext_fields_strict(&ext, &mut buf).unwrap();
+        write_mbi_u32(8, &mut buf);
+        write_mbi_u32(8, &mut buf);
+        let parsed = parse_header_ext_strict(&buf).unwrap();
+        assert_eq!(parsed.width, 8);
+        assert_eq!(parsed.height, 8);
+        assert_eq!(parsed.ext_fields, Some(ext));
+    }
+
+    #[test]
+    fn ext_strict_rejects_out_of_class_value_byte() {
+        // A Type-11 value byte outside ALPHA / DIGIT. The lax
+        // parse_header_ext accepts it; the strict one rejects it.
+        let mut buf = Vec::new();
+        write_mbi_u32(0, &mut buf);
+        buf.push(0b1110_0000);
+        // One pair: ident 1 ("k"), value 1 ('-' — not ALPHA/DIGIT).
+        buf.push(0b0_001_0001u8);
+        buf.push(b'k');
+        buf.push(b'-');
+        write_mbi_u32(8, &mut buf);
+        write_mbi_u32(8, &mut buf);
+        assert!(parse_header_ext(&buf).is_ok());
+        let err = parse_header_ext_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn ext_strict_rejects_non_minimal_width_mbi() {
+        // ExtFields absent, but the Width MBI carries a leading 0x80.
+        // The strict path's shortest-encoding check must fire even on
+        // the extension-aware entry point.
+        let buf = [0x00u8, 0x00, 0x80, 0x60, 0x40];
+        assert!(parse_header_ext(&buf).is_ok());
+        let err = parse_header_ext_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn ext_strict_rejects_non_minimal_type_mbi() {
+        let buf = [0x80u8, 0x00, 0x00, 0x01, 0x01];
+        assert!(parse_header_ext(&buf).is_ok());
+        let err = parse_header_ext_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn ext_strict_still_rejects_nonzero_type() {
+        let buf = [0x01u8, 0x00, 0x10, 0x10];
+        let err = parse_header_ext_strict(&buf).unwrap_err();
+        assert!(matches!(err, WbmpError::Unsupported(_)), "{err:?}");
     }
 
     #[test]

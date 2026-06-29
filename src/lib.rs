@@ -104,7 +104,8 @@ pub use ext::{
     ExtFieldType, ExtFields, FixHeaderField, Parameter, MAX_EXT_FIELD_BYTES,
 };
 pub use header::{
-    parse_header, parse_header_ext, parse_header_strict, write_header, Header, HeaderExt,
+    parse_header, parse_header_ext, parse_header_ext_strict, parse_header_strict, write_header,
+    Header, HeaderExt,
 };
 pub use image::{PlaneLayout, WbmpImage, WbmpPixelFormat, WbmpPlane};
 pub use limits::WbmpLimits;

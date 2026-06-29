@@ -7,6 +7,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `parse_header_ext_strict` — the strict counterpart to
+  `parse_header_ext`, a fully-conformant general-form (§4.4.1) header
+  parse. It tightens the extension-aware path the same way
+  `parse_header_strict` tightens the plain four-field path: every MBI
+  (Type, Width, Height) must use the §4.3.1 shortest encoding (no leading
+  `0x80`), and a Type-11 `ExtFields` region is decoded through
+  `parse_ext_fields_strict` so its parameter pairs are character-class
+  validated. It deliberately keeps accepting a non-`0x00` FixHeaderField
+  with the presence bit set (otherwise the extension-aware strict path
+  would contradict itself); the "FixHeaderField MUST be `0x00`, no
+  ExtFields" Type-0 conformance check remains `parse_header_strict`.
+  Re-exported at the crate root.
 - Strict Type-11 extension-field character-class validation (WAP-237
   §4.4.3 / §4.2 ABNF, RFC 2234 conventions). The normative grammar is
   `ParameterIdentifier = 1*8CHAR` (US-ASCII `CHAR` = `%x01-7F`) and
