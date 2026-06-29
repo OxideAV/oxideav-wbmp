@@ -68,7 +68,7 @@ pub fn encode_wbmp(width: u32, height: u32, mono_bits: &[u8]) -> Result<Vec<u8>>
 
 /// Encode a **general-form** WBMP file (§4.4.1
 /// `TypeField FixHeaderField [ExtFields] Width Height` + pixel data) from
-/// an already-packed monochrome bit plane and an optional [`ExtFields`]
+/// an already-packed monochrome bit plane and an optional [`ExtFields`](crate::ext::ExtFields)
 /// region — the inverse of [`crate::parse_wbmp_ext`].
 ///
 /// `mono_bits` has the same shape [`encode_wbmp`] requires: exactly
