@@ -1,5 +1,7 @@
 # oxideav-wbmp
 
+[![CI](https://github.com/OxideAV/oxideav-wbmp/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-wbmp/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-wbmp.svg)](https://crates.io/crates/oxideav-wbmp) [![docs.rs](https://docs.rs/oxideav-wbmp/badge.svg)](https://docs.rs/oxideav-wbmp) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Pure-Rust WBMP (WAP Bitmap) image codec and container for the
 [`oxideav`](https://github.com/OxideAV/oxideav) framework. Covers
 WBMP **Type 0** (uncompressed monochrome bitmap) — the only widely-
