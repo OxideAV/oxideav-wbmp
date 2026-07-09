@@ -611,6 +611,49 @@ mod tests {
     }
 
     #[test]
+    fn ext_reserved01_and_reserved10_roundtrip() {
+        // The Type-01 / Type-10 single-reserved-octet regions must survive
+        // an encode_wbmp_ext → parse_wbmp_ext round trip on their own
+        // variant (only their *error* path — a wrong plane length — was
+        // previously covered). The FixHeaderField type bits carry the
+        // variant selection, so a Reserved01 must not decode as Reserved10.
+        let bits = [0x3C];
+        for region in [ExtFields::Reserved01(0x5A), ExtFields::Reserved10(0xA5)] {
+            let encoded = encode_wbmp_ext(8, 1, &bits, Some(&region), false).unwrap();
+            let decoded = parse_wbmp_ext(&encoded).unwrap();
+            assert_eq!(decoded.image.width, 8);
+            assert_eq!(decoded.image.height, 1);
+            assert_eq!(decoded.image.planes[0].data, bits);
+            assert_eq!(decoded.ext_fields, Some(region));
+        }
+    }
+
+    #[test]
+    fn ext_strict_writer_matches_lax_for_in_class_fields() {
+        // For ExtFields that already satisfy the §4.4.3 character classes,
+        // the strict and lax writers must emit byte-identical streams —
+        // the strict path only ever *rejects* out-of-class parameters, it
+        // never changes the wire form of a conformant one.
+        let bits = [0xF0, 0x0F];
+        let regions = [
+            ExtFields::Bitfield00(vec![0x01, 0x40, 0x00]),
+            ExtFields::Reserved01(0x11),
+            ExtFields::Reserved10(0x22),
+            ExtFields::ParameterPairs11(vec![
+                Parameter::new(b"id".to_vec(), b"Val9").unwrap(),
+                Parameter::new(b"k".to_vec(), b"0").unwrap(),
+            ]),
+        ];
+        for region in regions {
+            let lax = encode_wbmp_ext(16, 1, &bits, Some(&region), false).unwrap();
+            let strict = encode_wbmp_ext(16, 1, &bits, Some(&region), true).unwrap();
+            assert_eq!(lax, strict, "strict == lax for in-class {region:?}");
+            // And both decode back to the same ExtFields.
+            assert_eq!(parse_wbmp_ext(&strict).unwrap().ext_fields, Some(region));
+        }
+    }
+
+    #[test]
     fn ext_rejects_wrong_plane_length() {
         let region = ExtFields::Reserved01(0x5A);
         // 16×1 needs a 2-byte plane; pass 1 byte.
