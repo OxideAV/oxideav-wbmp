@@ -290,7 +290,7 @@ O(1) rather than chasing the input.
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
-in [`fuzz/`](fuzz/) with nine libFuzzer targets, all crash-free under
+in [`fuzz/`](fuzz/) with twelve libFuzzer targets, all crash-free under
 sustained sweeps with bounded RSS (the allocation guards hold against
 adversarial headers):
 
@@ -407,6 +407,39 @@ adversarial headers):
   frame-count cap, the no-per-frame-header back-to-back plane layout,
   and the trailing-run-shorter-than-a-frame ignorable-padding posture —
   none of which the seven single-frame targets reach.
+* `mbi` — drives the Multi-Byte Integer codec directly (`write_mbi_u32` /
+  `read_mbi_u32` / `read_mbi_u32_strict` / `mbi_u32_len`), the encoding
+  every header field is built from, which the other targets reach only
+  transitively through a whole-header parse. The **writer** half round-
+  trips a `u32` from the fuzz bytes and asserts the §4.3.1 invariants: the
+  first octet is never `0x80` (shortest encoding), every non-final octet
+  sets its continuation bit and the final one clears it, the length is
+  1..=5 and equals `mbi_u32_len`, and both readers recover the exact value
+  consuming all emitted bytes. The **reader** half feeds arbitrary bytes to
+  both readers (no panic / overflow / over-read), asserts **strict ⊆ lax**
+  (same value + consumption when strict accepts), and that any lax success
+  consumes 1..=`len` octets no fewer than the value's minimal form (leading
+  `0x80` padding only ever adds octets). The only target driving the writer
+  across the full value space.
+* `strict_decode` — drives `parse_wbmp_strict` /
+  `parse_wbmp_strict_with_limits`, the fully-conformant whole-image decode
+  (the `FixHeaderField` MUST be `0x00`, dimension MBIs read with the §4.3.1
+  shortest-encoding check). Asserts the call always returns and that
+  **strict ⊆ lax**: a strict-accepted stream decodes byte-identically
+  through `parse_wbmp` (same width / height / polarity / stride / plane),
+  so strict only ever rejects and never alters the decode. The only target
+  reaching the strict whole-image path — `decode` drives lax `parse_wbmp`
+  and `header_ext_strict` drives the presence-bit-tolerant
+  `parse_header_ext_strict`.
+* `encode_ext` — round-trips the general-form extension-header *writer*
+  `encode_wbmp_ext` (§4.4.1) through `parse_wbmp_ext` for every `ExtFields`
+  variant (`None`, `Bitfield00`, `Reserved01`, `Reserved10`,
+  `ParameterPairs11`), both lax and strict. Asserts the image (width /
+  height / plane bytes) and the `ExtFields` survive byte-for-byte and that
+  a `None` ext field yields an `encode_wbmp`-identical stream. The only
+  target closing the encode → decode loop over the full file writer —
+  `header_ext` round-trips only the region-level `write_ext_fields` and
+  `decode_ext` only reads.
 
 All nine build with `default-features = false`, so the harness
 exercises the framework-free standalone path and never links
