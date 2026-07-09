@@ -91,6 +91,36 @@ cargo-fuzz = true
 #                   every plane survives byte-for-byte in stream order
 #                   (plus single-frame `encode_wbmp` equivalence). The only
 #                   target that reaches the multi-frame back-to-back layout.
+#  * `mbi`        — drive the Multi-Byte Integer codec directly
+#                   (`write_mbi_u32` / `read_mbi_u32` / `read_mbi_u32_strict`
+#                   / `mbi_u32_len`). Writer half: round-trip every `u32`
+#                   and assert the §4.3.1 invariants (no leading 0x80,
+#                   continuation-bit discipline, 1..=5 octets, len estimator
+#                   agreement, exact re-decode). Reader half: arbitrary
+#                   bytes through both readers never panic, strict ⊆ lax,
+#                   and any lax success consumes in-bounds octets no fewer
+#                   than the value's minimal form. The only target that
+#                   drives the writer across the full value space.
+#  * `strict_decode`
+#                 — drive `parse_wbmp_strict` / `parse_wbmp_strict_with_limits`,
+#                   the fully-conformant whole-image decode path (the
+#                   `FixHeaderField` MUST be 0x00, dimension MBIs read with
+#                   the §4.3.1 shortest-encoding check). Asserts the call
+#                   returns and that strict ⊆ lax: a strict-accepted stream
+#                   decodes identically through `parse_wbmp`. The only
+#                   target reaching the strict whole-image path (`decode`
+#                   drives lax `parse_wbmp`; `header_ext_strict` drives the
+#                   presence-bit-tolerant `parse_header_ext_strict`).
+#  * `encode_ext` — round-trip the general-form extension-header *writer*
+#                   `encode_wbmp_ext` (§4.4.1) through `parse_wbmp_ext` for
+#                   every `ExtFields` variant (`None` / `Bitfield00` /
+#                   `Reserved01` / `Reserved10` / `ParameterPairs11`), lax
+#                   and strict. Asserts the image + ext fields survive
+#                   byte-for-byte and that a `None` ext field yields an
+#                   `encode_wbmp`-identical stream. The only target closing
+#                   the encode → decode loop over the full file writer
+#                   (`header_ext` round-trips only the region-level
+#                   `write_ext_fields`; `decode_ext` only reads).
 #
 # The crate is pulled in with `default-features = false` so the fuzz
 # build exercises the framework-free standalone `parse_wbmp` /
@@ -162,5 +192,23 @@ doc = false
 [[bin]]
 name = "frames"
 path = "fuzz_targets/frames.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "mbi"
+path = "fuzz_targets/mbi.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "strict_decode"
+path = "fuzz_targets/strict_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "encode_ext"
+path = "fuzz_targets/encode_ext.rs"
 test = false
 doc = false
