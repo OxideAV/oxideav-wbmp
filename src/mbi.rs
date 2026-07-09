@@ -351,6 +351,60 @@ mod tests {
     }
 
     #[test]
+    fn writer_invariants_hold_across_value_sweep() {
+        // Deterministic mirror of the `mbi` fuzz target's writer half: for
+        // a spread of values covering every octet-count boundary plus a
+        // dense low-range sweep, the encoding must (a) never begin with a
+        // leading 0x80 (§4.3.1), (b) set the continuation bit on every
+        // non-final octet and clear it on the final one, (c) have a length
+        // equal to `mbi_u32_len` in 1..=5, and (d) decode back exactly
+        // through both readers, consuming all emitted bytes.
+        let mut values: Vec<u32> = (0u32..=0x200).collect();
+        values.extend([
+            0x7F,
+            0x80,
+            0x3FFF,
+            0x4000,
+            0x1F_FFFF,
+            0x20_0000,
+            0x0FFF_FFFF,
+            0x1000_0000,
+            0x7FFF_FFFF,
+            0x8000_0000,
+            u32::MAX - 1,
+            u32::MAX,
+        ]);
+        for v in values {
+            let mut buf = Vec::new();
+            write_mbi_u32(v, &mut buf);
+            assert_eq!(buf.len(), mbi_u32_len(v), "len estimator for {v:#x}");
+            assert!(
+                (1..=MAX_U32_MBI_BYTES).contains(&buf.len()),
+                "len bound {v:#x}"
+            );
+            assert_ne!(buf[0], 0x80, "leading 0x80 for {v:#x}");
+            let last = buf.len() - 1;
+            for (i, &b) in buf.iter().enumerate() {
+                assert_eq!((b & 0x80) != 0, i != last, "cont flag octet {i} of {v:#x}");
+            }
+            let mut off = 0;
+            assert_eq!(
+                read_mbi_u32(&buf, &mut off).unwrap(),
+                v,
+                "lax decode {v:#x}"
+            );
+            assert_eq!(off, buf.len(), "lax consumed all for {v:#x}");
+            let mut soff = 0;
+            assert_eq!(
+                read_mbi_u32_strict(&buf, &mut soff).unwrap(),
+                v,
+                "strict {v:#x}"
+            );
+            assert_eq!(soff, buf.len(), "strict consumed all for {v:#x}");
+        }
+    }
+
+    #[test]
     fn offset_advances_past_consumed_bytes_only() {
         // Pack two MBIs back-to-back; second decode must start where
         // the first ended.
