@@ -6,6 +6,42 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-wbmp/compare/v0.0.2...v0.0.3) - 2026-07-18
+
+### Other
+
+- RuntimeContext entry point — register_runtime + the register! macro
+- document the three new fuzz targets (nine -> twelve)
+- MBI writer-invariant sweep test (mirrors mbi fuzz writer half)
+- cover Reserved01/10 ext round-trip + strict==lax writer (mirrors encode_ext fuzz)
+- add mbi / strict_decode / encode_ext targets over the three un-fuzzed public paths
+- add CI / crates.io / docs.rs / MIT-license badges
+- fix unresolved intra-doc link to ExtFields in encode_wbmp_ext
+- integration tests for the general-form ext-header surface
+- encode_wbmp_ext / write_header_ext — general-form writer
+- tighten container probe content-sniff (§4.1 precedence)
+- add header_ext_strict target over parse_header_ext_strict
+- parse_header_ext_strict — fully-conformant general-form header
+- strict Type-11 ext-field character-class validation (§4.4.3 ABNF)
+- add Criterion frames bench for the animation encode/decode path
+- add frames target over parse_wbmp_frames / encode_wbmp_frames
+- animated sub-image encoding (encode_wbmp_frames) — inverse of parse_wbmp_frames
+- decode animated sub-images (WAP-237 §4.2 / §4.5.1)
+- refresh to current status, drop per-round changelog cruft
+- enforce §4.3.1 shortest-encoding MUST NOT on the strict decode path
+- extension-header-aware decode path parse_wbmp_ext + decode_ext fuzz target
+- add header_ext target over parse_header_ext extension-header parser
+- parse WBMP extension headers (ExtFields, WAP-237 §4.4.1–§4.4.3)
+- Typed primitive PlaneLayout for stride / total-bytes / pad mask
+- drop release-plz.toml — use release-plz defaults across the workspace
+- Round-13 coverage: framework trait surface integration tests
+- Round-12 API surface: strict header conformance entry points
+- Round-11 hardening: fifth cargo-fuzz target for parse_wbmp_as(MonoBlack)
+- Round-10 perf: accumulator-flush pack in encode_wbmp_from_dither
+- Round-9 hardening: fourth cargo-fuzz target for encode_wbmp_from_dither
+- Round-8 API surface: encode_wbmp_from_dither (Floyd-Steinberg)
+- Round-7 hardening: third cargo-fuzz target for encode_wbmp_from_threshold
+
 ### Added
 
 - `register_runtime` + the `oxideav_core::register!` entry point, so
