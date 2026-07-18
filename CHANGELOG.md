@@ -6,6 +6,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `register_runtime` + the `oxideav_core::register!` entry point, so
+  `oxideav_meta::register_all` now dispatches this crate automatically;
+  the two-registry `register` remains the direct API.
+
 ### Changed
 - Tighter container content-sniff probe, motivated by the §4.1 precedence
   rule ("the actual data format has precedence over the media type"). The
