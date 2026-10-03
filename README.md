@@ -5,21 +5,176 @@
 Pure-Rust WBMP (WAP Bitmap) image codec and container for the
 [`oxideav`](https://github.com/OxideAV/oxideav) framework. Covers
 WBMP **Type 0** (uncompressed monochrome bitmap) — the only widely-
-deployed WBMP variant — in one self-contained crate. Spec source: the
-publicly published WAP Forum specification *WAP-237 Wireless
-Application Environment Specification* (May 2001), §8 "Image
-Formats".
+deployed WBMP variant — in one self-contained crate: the general-form
+header with extension fields, the packed 1-bit main image and the up
+to 15 animated sub-images that may follow it. Spec source: the publicly
+published WAP Forum specification *WAP-237 Wireless Application
+Environment Defined Media Type Specification* (15 May 2001), §4.
+
+## Standalone use
+
+`oxideav-wbmp` follows the OxideAV image-crate contract
+(`IMAGE_CRATE_API`): the same small root vocabulary every
+`oxideav-<format>` image crate exposes, usable with
+`default-features = false` and no `oxideav-core`, returning pixels as
+plain `Vec<u8>`.
+
+```toml
+[dependencies]
+oxideav-wbmp = { version = "0.0", default-features = false }
+```
+
+```rust
+let bytes = std::fs::read("in.wbmp")?;
+if oxideav_wbmp::probe(&bytes) {
+    let info  = oxideav_wbmp::info(&bytes)?;        // header only: width, height, frames
+    let img   = oxideav_wbmp::decode(&bytes)?;      // WbmpImage, native 1-bit MonoBlack
+    let rgba: Vec<u8> = img.to_rgba8();             // 0 / 255 per channel, alpha 255
+    let (w, h) = (img.width(), img.height());
+
+    let opts = oxideav_wbmp::EncodeOptions::default().with_dither();
+    let out: Vec<u8> = oxideav_wbmp::encode_rgba8(w, h, &rgba, &opts)?;
+    std::fs::write("out.wbmp", out)?;
+}
+```
+
+| Item | Signature |
+|---|---|
+| `probe` | `fn(&[u8]) -> bool` — plausible Type-0 header (`Type` 0, well-formed `FixHeaderField` / extension region, non-zero dimensions ≤ `PROBE_MAX_DIMENSION`, first row present); allocation-free |
+| `info` | `fn(&[u8]) -> Result<ImageInfo, Error>` — `width`, `height`, `format`, `frames` (1..=16), `has_alpha`, `color`, `has_icc` / `has_exif` / `has_xmp`, plus `fix_header`, `ext_fields`, `data_offset` |
+| `decode` / `decode_with` | `fn(&[u8][, &DecodeOptions]) -> Result<WbmpImage, Error>` — main image, native layout |
+| `decode_rgb8` / `decode_rgba8` | `-> Result<RgbImage / RgbaImage, Error>` — `{ width, height, data }`, tightly packed, 3 / 4 bytes per pixel |
+| `decode_all` / `decode_all_with` | `-> Result<Vec<Frame>, Error>` — `Frame { image, delay: None, index }`; the main image plus every animated sub-image |
+| `decode_from` | `fn<R: Read>(R) -> Result<WbmpImage, Error>` |
+| `encode` | `fn(&WbmpImage, &EncodeOptions) -> Result<Vec<u8>, Error>` — either polarity, written as the wire layout |
+| `encode_rgb8` / `encode_rgba8` / `encode_gray8` | `fn(w, h, &[u8], &EncodeOptions)` — 8-bit input quantised to 1 bit per `EncodeOptions::quantize` |
+| `encode_to` | `fn<W: Write>(&WbmpImage, &EncodeOptions, W) -> Result<(), Error>` |
+| `encode_frames` | `fn(&[WbmpImage], &EncodeOptions) -> Result<Vec<u8>, Error>` — the inverse of `decode_all` |
+| `WbmpImage` | `{ width, height, format: PixelFormat, planes: Vec<Plane>, color: ColorInfo, metadata: Metadata }` (no palette) with `new` / `packed` / `from_bits` / `from_gray8` / `from_rgb8` / `from_rgba8`, `width()` / `height()` / `format()` / `stride()`, `as_bytes()` / `into_raw()`, `to_gray8()` / `to_rgb8()` / `to_rgba8()`, `is_white(x, y)`, `into_format()` |
+| `PixelFormat` | `= WbmpPixelFormat`: `MonoBlack` (native, 1 = white), `MonoWhite` (0 = white) — names and polarity mirror `oxideav_core::PixelFormat` |
+| `Error` | `= WbmpError`: `InvalidData`, `Unsupported`, `LimitExceeded`, `Io` |
+
+`to_rgb8` / `to_rgba8` expand every bit to `0` or `255` (alpha `255`)
+whatever the polarity; no colour management is applied. Constructors
+validate geometry and return `Result`, so an inconsistent image cannot
+exist and the conversions are infallible.
+
+The pre-contract names — `parse_wbmp`, `parse_wbmp_strict`,
+`parse_wbmp_with_limits`, `parse_wbmp_as`, `parse_wbmp_ext`,
+`parse_wbmp_frames`, `parse_header*`, `encode_wbmp`, `encode_wbmp_ext`,
+`encode_wbmp_frames`, `encode_wbmp_from_threshold`,
+`encode_wbmp_from_dither`, `WbmpLimits`, `WbmpPlane`, `WbmpAnimation`,
+`WbmpImageExt`, `Header` / `HeaderExt` — remain for one release as
+`#[deprecated]` thin wrappers over the same implementation.
+
+## Framework use
+
+With the default-on `registry` feature the crate plugs into the
+`oxideav-core` registry:
+
+```rust
+let mut ctx = oxideav_core::RuntimeContext::new();
+oxideav_wbmp::register(&mut ctx);                      // codec "wbmp" + the .wbmp container
+let dec = oxideav_wbmp::make_decoder(&params)?;        // / make_encoder
+let frame: oxideav_core::VideoFrame = img.into();      // From<WbmpImage>: one packed 1-bit plane
+let back = oxideav_wbmp::WbmpImage::from_video_frame(&frame, &params)?;
+```
+
+The trait-side `Decoder` / `Encoder` are thin adapters over the
+standalone functions (one implementation). The decoder emits the wire
+polarity (`PixelFormat::MonoBlack`) unless `params.pixel_format` asks
+for `MonoWhite`; the encoder accepts `MonoBlack` (verbatim), `MonoWhite`
+(inverted, padding re-zeroed) and `Gray8` (quantised per the
+`quantize` / `threshold` encoder options, discoverable through the
+registry's options schema). The demuxer hands the whole file out as one
+keyframe packet and advertises `MonoBlack`; the muxer writes the
+encoder's packet through unchanged. `register_codecs` /
+`register_containers` / `register_registries` are the per-registry
+halves. WBMP has no colour signalling or palette, so no side-channel is
+stamped on frames.
+
+## Supported layouts
+
+Decode — the wire layout → native `PixelFormat`:
+
+| Wire | `PixelFormat` | Notes |
+|---|---|---|
+| Type 0, 1 bit/pixel, MSB-first, `1` = white | `MonoBlack` | stride `ceil(width / 8)`, rows byte-padded; `DecodeOptions::format = MonoWhite` flips every bit during the row copy (padding stays zero) |
+
+Encode — `WbmpImage::format` → wire:
+
+| `PixelFormat` | Notes |
+|---|---|
+| `MonoBlack` | written verbatim (a padded stride is repacked, padding bits zeroed) |
+| `MonoWhite` | inverted to the wire polarity |
+
+`encode_rgb8` / `encode_rgba8` / `encode_gray8` reduce continuous-tone
+input to 1 bit because WBMP cannot carry it: RGB becomes Rec. 601 luma
+(`(299 R + 587 G + 114 B + 500) / 1000`), alpha is **dropped** (WBMP has
+no alpha mechanism), then `Quantize::Threshold(t)` (`>= t` → white,
+default 128) or `Quantize::Dither` (Floyd–Steinberg, 7/16 3/16 5/16
+1/16, decision at 128) packs the bits. `encode` of a 1-bit image never
+quantises. There is no `WbmpImage` the format cannot represent, so
+`Error::Unsupported` is reserved for geometry that overflows `usize`.
+
+## Options
+
+`DecodeOptions` (`Default` + `with_*`): `max_width`, `max_height`,
+`max_pixels`, `max_bytes` (packed plane bytes per frame; default 1 GiB,
+`None` lifts it) — all checked against the header before any
+allocation (`Error::LimitExceeded`) — `strict` (default `false`) and
+the WBMP extra `format` (`MonoBlack` default / `MonoWhite`).
+
+| | lenient (default) | `strict` |
+|---|---|---|
+| `FixHeaderField` | honoured per §4.4.1: a set presence bit means the `ExtFields` region is parsed and skipped before `Width` (non-conformant Type-0 producer), surfaced by `info` | must be `0x00` (§4.5.1 "Extension headers MUST NOT be presented in this format") |
+| MBIs | a bounded run of redundant leading `0x80` octets tolerated | shortest encoding required (§4.3.1) |
+| Trailing bytes | ignored (a partial trailing frame is padding) | ignored |
+
+Both modes reject a non-zero `Type` (`Unsupported`), a zero dimension
+and a truncated main image (`InvalidData`).
+
+`EncodeOptions` (`Default` + `with_*`): `quantize` (`with_threshold(t)`
+/ `with_dither()`, default threshold 128), `ext_fields:
+Option<ExtFields>` (write a general-form header; `None` = conformant
+Type 0) and `strict` (validate a Type-11 region's §4.4.3 character
+classes before writing). WBMP has no compression or quality axis.
+
+## Metadata and colour
+
+WBMP carries no ICC / Exif / XMP / gamma, so `WbmpImage::metadata` is
+always empty and the encoder ignores whatever a caller sets.
+`WbmpImage::color` is the documented default `ColorInfo::wbmp_default()`
+= full range, identity matrix (0), primaries and transfer unspecified
+(2): a 1-bit sample is one of the two extremes of an achromatic signal
+("the two states of pixel off and on", WAP-237 §4). `decode(encode(img))
+== img` for planes, colour and metadata in both polarities
+(`tests/image_crate_api.rs`, including a randomised property test over
+odd widths and 1..=16-frame animations).
+
+## Limits
+
+Every function returns `Error` on hostile input, never panics (fuzzed:
+`probe` / `info` / `decode` / `decode_with` / `decode_all` /
+`decode_rgb8` / `decode_rgba8` plus the encoder, extension-header and
+MBI paths — see *Fuzzing*). `DecodeOptions` limits fire before
+allocation; the `stride × height` product is overflow-checked; the
+extension-header region is capped at `MAX_EXT_FIELD_BYTES` (4096
+octets); MBIs are capped at `MAX_MBI_BYTES` (7) octets. `info` applies
+no limit (it allocates nothing beyond the parsed extension fields).
 
 ## Wire format (Type 0)
 
 ```text
   Type  (MBI = 0)         1 byte
-  FixedHeader             1 byte (always 0)
+  FixHeaderField          1 byte (0x00 in a conformant Type-0 file)
+  [ExtFields]             only when FixHeaderField bit 7 is set (§4.4.1)
   Width  (MBI)            1..5 bytes
   Height (MBI)            1..5 bytes
-  Pixel data              ceil(width / 8) * height bytes,
+  Main image              ceil(width / 8) * height bytes,
                           MSB-first, 1 = white, 0 = black,
                           rows zero-padded to the next byte.
+  Animated images         0..15 further planes of the same size (§4.5.1)
 ```
 
 `MBI` (Multi-Byte Integer) is the WAP variable-length unsigned
@@ -29,44 +184,15 @@ codec lives in [`mbi`](src/mbi.rs) and round-trips every value in the
 `u32` range; oversize sequences are rejected to avoid silent
 truncation.
 
-## Decode
+### Polarity
 
-| Type | Channels | Bit depth | `PixelFormat` out |
-|------|----------|-----------|-------------------|
-| 0    | 1 (1-bit) | 1        | `MonoWhite` (verbatim) or `MonoBlack` (caller-selected polarity) |
-
-Other Type values raise `WbmpError::Unsupported`. None ever shipped
-in public WAP profiles.
-
-## Lax vs strict header conformance
-
-`parse_wbmp` (lax) accepts any value for the one-byte `FixedHeader`
-field — the spec text leaves the byte unused in Type 0 but mandatory
-in the wire format, and treating it as opaque keeps the decoder
-forward-compatible with hypothetical Type-0 extensions. Callers that
-need wire-format conformance instead — reject anything whose
-`FixedHeader` is not the spec-mandated `0x00` — reach for
-`parse_wbmp_strict` (and `parse_wbmp_strict_with_limits` for the
-explicit-limits variant). The strict path errors out as
-`WbmpError::InvalidData` with a message naming the offending byte;
-all other checks (Type-field, zero-dimension, MBI bounds, limits,
-truncation) are identical to the lax path. The header-level entry
-points `parse_header` / `parse_header_strict` expose the same split
-for callers that want to inspect the four-field header without
-touching the pixel plane.
-
-The strict path additionally enforces the §4.3.1 **shortest-encoding**
-requirement on every multi-byte integer: the spec states the encoded
-value "MUST NOT start with an octet with the value `0x80`", i.e. a
-redundant leading continuation octet that carries no payload bits. The
-lax path tolerates a bounded amount of such leading-`0x80` padding (a
-few real files pad despite the MUST NOT); the strict path rejects it
-as `WbmpError::InvalidData` on the Type, Width or Height MBI. An
-*interior* `0x80` group is still accepted in both paths — it is a
-legitimate all-zero 7-bit group with more bytes following (e.g.
-`0x4000` minimally encodes as `0x81 0x80 0x00`); only a *leading*
-`0x80` is forbidden. The standalone reader pair is `read_mbi_u32`
-(lax) / `read_mbi_u32_strict`.
+WAP-237 §4.5.1 fixes the wire polarity at "white=1, black=0". In the
+`oxideav_core::PixelFormat` naming that is **`MonoBlack`** ("0 =
+black"); `MonoWhite` ("0 = white") is the inverse. Before the
+image-crate contract this crate tagged the wire bytes `MonoWhite`, so
+frames reached the framework with inverted meaning; the variants now
+carry the core polarity (see the CHANGELOG), the plane bytes are
+unchanged.
 
 ## Extension headers (`ExtFields`)
 
@@ -87,402 +213,90 @@ a real shipped WBMP never carries any — but the format is defined, and
 | 10   | Single reserved octet. |
 | 11   | Sequence of `ParameterHeader ParameterIdentifier ParameterValue` pairs. The `ParameterHeader` octet is `concat-flag | 3-bit identifier-size (1-8) | 4-bit value-size (1-16)`; the identifier is a US-ASCII string, the value alphanumeric (Table 4-4). |
 
-`parse_ext_fields` decodes a region given a `FixHeaderField`;
-`write_ext_fields` is the inverse serializer.
-
-### Strict vs lax extension fields
-
-The §4.4.3 / §4.2 ABNF is normative about the Type-11 character classes:
-`ParameterIdentifier = 1*8CHAR` (US-ASCII `CHAR` = `%x01-7F`, RFC 2234
-conventions) and `ParameterValue = 1*16(ALPHA / DIGIT)` (`A-Za-z0-9`).
-The lax `parse_ext_fields` stores the parameter bytes verbatim regardless
-of their class — a tolerant decode that lets a caller inspect a
-non-conformant stream — while `parse_ext_fields_strict` rejects any
-identifier byte outside US-ASCII `CHAR` or value byte outside
-`ALPHA / DIGIT` as `WbmpError::InvalidData`, naming the offending byte and
-class. `write_ext_fields_strict` is the matching writer guard: it
-validates every Type-11 `Parameter` against the same classes before
-emitting, so a strict writer can never produce an ABNF-violating stream.
-The Type-00 / 01 / 10 reserved-octet regions carry opaque bytes with no
-character-class constraint, so the strict and lax paths agree
-byte-for-byte there. `Parameter::new` is a validating constructor (and
-`Parameter::validate` the standalone check) enforcing the same 1..=7
-identifier / 1..=15 value length-and-class bounds — the upper bounds are
-7 / 15 rather than the ABNF's 8 / 16 because the 3-/4-bit `ParameterHeader`
-size fields can encode at most that literal byte count. `identifier_str`
-/ `value_str` return the bytes as `&str` (always succeeding for an
-in-class parameter, which is by construction valid UTF-8).
-
-The header-level
-[`parse_header_ext`] returns a `HeaderExt` (width / height /
-data_offset + the decoded FixHeaderField + `Option<ExtFields>`) that
-honours the presence flag, so the decoder lands on the real
-Width/Height rather than mis-reading the first ExtField octet as the
-width MBI when a non-conformant Type-0 file carries extension headers.
-A `MAX_EXT_FIELD_BYTES` (4096) ceiling bounds pathological
-all-continuation chains. `parse_header_ext_strict` is the fully-conformant
-counterpart: it reads every MBI with the §4.3.1 shortest-encoding check
-*and* routes a Type-11 region through `parse_ext_fields_strict` so its
-parameters are character-class validated. (It deliberately still accepts a
-presence-bit-set `FixHeaderField`, since handling extension headers is the
-whole reason to use the extension-aware path; the "FixHeaderField MUST be
-`0x00`, no ExtFields" Type-0 conformance check stays `parse_header_strict`.)
-The plain `parse_header` / `parse_wbmp` paths
-are unchanged — they treat the FixHeaderField byte as opaque (the
-forward-compat lax behaviour documented above), so this is a purely
-additive entry point.
-
-For a full decode of an extension-header-bearing stream into pixels,
-`parse_wbmp_ext` (and `parse_wbmp_ext_with_limits`) route through
-`parse_header_ext` and then copy the main image data, returning a
-`WbmpImageExt { image, ext_fields }`. On a conformant Type-0 file the
-`image` is byte-identical to `parse_wbmp`'s output and `ext_fields` is
-`None`; on a non-conformant file carrying extension headers it decodes
-the real bitmap (rather than failing on the first ExtField octet
-mistaken for the width MBI) and surfaces the parsed pairs/bitfield.
-
-`parse_wbmp` (and `parse_wbmp_with_limits`) emit the on-disk
-polarity unchanged — `WbmpPixelFormat::MonoWhite`, where bit `1` is
-white. Callers that want the inverted polarity for downstream
-consumers reach for `parse_wbmp_as` (or `parse_wbmp_as_with_limits`):
-
-```rust
-use oxideav_wbmp::{parse_wbmp_as, WbmpPixelFormat};
-let img = parse_wbmp_as(&bytes, WbmpPixelFormat::MonoBlack)?;
-// img.planes[0].data: every payload bit inverted, every row's
-// trailing padding bits re-zeroed so they stay distinguishable
-// from real `1`-bit "black" pixels on inspection.
-```
-
-The polarity flip happens in-place during the decode-time row copy
-— no extra allocation versus the verbatim path. Under the
-default-on `registry` feature, setting
-`params.pixel_format = Some(PixelFormat::MonoBlack)` on the
-`CodecParameters` handed to the framework decoder selects the same
-behaviour through the `Decoder` trait.
+The lenient `decode` / `info` honour the presence flag, so a
+non-conformant Type-0 file carrying extension headers decodes to the
+real bitmap (rather than mis-reading the first ExtField octet as the
+width MBI) and `ImageInfo::ext_fields` surfaces the parsed region;
+`encode` with `EncodeOptions::ext_fields` is the inverse writer. At the
+region level `parse_ext_fields` / `write_ext_fields` and their
+`_strict` twins are the depth API: the §4.4.3 / §4.2 ABNF is normative
+about the Type-11 character classes (`ParameterIdentifier = 1*8CHAR`,
+US-ASCII `%x01-7F`; `ParameterValue = 1*16(ALPHA / DIGIT)`), the lax
+parser stores the bytes verbatim, the strict parser / writer reject an
+out-of-class byte as `Error::InvalidData`. `Parameter::new` is the
+validating constructor (1..=7 identifier / 1..=15 value bytes — the
+3-/4-bit size fields cannot encode 8 / 16); `identifier_str` /
+`value_str` return the bytes as `&str`. The Type-00 / 01 / 10 regions
+carry opaque reserved octets, so strict and lax agree there.
 
 ## Animated sub-images
 
-WAP-237 §4.2 defines the full image-data grammar as
-`Image-data = Main-image 0*15Animated-image`, and §4.5.1 states the
-stream "can have at most 15 animated images following the main image."
-Each animated sub-image is a bitmap "formed according to image data
-structure specified by the TypeField" — for Type 0 that is an
-identically-dimensioned packed 1-bit plane carried with **no per-frame
-header**: the single header `Width`/`Height` govern every frame, so each
-sub-image occupies exactly `stride * height` bytes immediately after the
-previous one.
-
-`parse_wbmp_frames` (and `parse_wbmp_frames_with_limits`) decode the main
-image plus any trailing sub-images into a `WbmpAnimation`:
-
-```rust
-use oxideav_wbmp::parse_wbmp_frames;
-let anim = parse_wbmp_frames(&bytes)?;
-// anim.frames[0] is the main image; anim.frames[1..] the animated
-// sub-images in stream order.
-if anim.is_animated() {
-    println!("{} animated sub-images", anim.animated_count());
-}
-let main = anim.main_image(); // frame 0 as a standalone WbmpImage
-```
-
-The decoder greedily consumes each following `stride * height` chunk as a
-sub-image until either fewer than one full frame of bytes remain (the
-trailing run is then treated as ignorable padding, matching the
-single-frame path's tolerance of trailing bytes) or the §4.5.1 cap of
-`MAX_ANIMATED_IMAGES` (15) animated frames is reached. The per-frame
-`WbmpLimits` dimension / pixel-byte checks reuse the single-frame guards,
-so an over-sized header is rejected before any frame is allocated. On a
-non-animated WBMP the returned `frames` holds exactly one plane,
-byte-identical to `parse_wbmp`'s output. WAP-237 defines no animation
-timing parameters ("It is User Agent dependent how those animated images
-are processed"), so the crate surfaces the raw frame planes and leaves
-presentation timing to the caller. The single-frame `parse_wbmp` entry
-point is unchanged.
-
-`encode_wbmp_frames(width, height, &[main, anim…])` is the inverse: it
-writes the single four-field header followed by the main image plane and
-0..15 same-dimension animated sub-image planes back-to-back (no per-frame
-header, matching the §4.2 BNF). Every frame must be exactly
-`ceil(width / 8) * height` bytes — the same packed-plane shape
-`encode_wbmp` accepts. The §4.5.1 cap (`1 + MAX_ANIMATED_IMAGES == 16`
-frames total), zero dimensions, an empty frame list, and any wrong-sized
-frame all raise `WbmpError::InvalidData`. A single-element call is
-byte-for-byte identical to `encode_wbmp` with the same plane, so a
-non-animated caller can use either entry point, and an
-`encode_wbmp_frames` → `parse_wbmp_frames` round trip recovers every
-plane in stream order.
-
-## Encode
-
-[`encode_wbmp`] takes an already-packed mono plane (1 bit per pixel,
-MSB-first, 1 = white, rows padded to a byte boundary) and prepends a
-Type-0 header. [`encode_wbmp_ext`] is the general-form (§4.4.1) writer —
-the inverse of `parse_wbmp_ext`: it takes the same packed plane plus an
-optional `ExtFields` region and writes
-`TypeField FixHeaderField [ExtFields] Width Height` + the plane. With no
-`ExtFields` the output is byte-identical to `encode_wbmp`; with some it
-synthesises the matching `FixHeaderField` (presence flag set, bits 6-5
-selecting the variant type) and emits a deliberately non-conformant
-Type-0 stream (§4.5.1 forbids ext headers in Type 0) that round-trips
-through `parse_wbmp_ext`, recovering both the image and the parameters.
-Its `strict` flag validates a Type-11 region's parameter character
-classes before emitting. [`encode_wbmp_from_threshold`] thresholds an 8-bit
-grayscale buffer (one byte per pixel, no row padding) at the supplied
-cut-off and produces a complete WBMP file in one call.
-[`encode_wbmp_from_dither`] takes the same 8-bit grayscale buffer
-and runs a Floyd–Steinberg error-diffusion quantiser before packing,
-so a smoothly-shaded photographic input lands as a stippled rendering
-rather than collapsing every mid-tone to a flat region. The dither
-helper uses an i16 row-accumulator (`O(width)` extra space) and the
-classic 7/16, 3/16, 5/16, 1/16 forward-neighbour distribution;
-saturated black/white pixels diffuse zero residual, so flat-mono
-input agrees byte-for-byte with `encode_wbmp_from_threshold(.., 128)`.
-Reference: R. W. Floyd and L. Steinberg, "An adaptive algorithm for
-spatial greyscale", *Proc. SID* 17/2 (1976), pp. 75–77.
-
-When the `registry` feature is on, the framework `Encoder` trait
-accepts `MonoWhite` (verbatim), `MonoBlack` (polarity-flipped, with
-padding bits re-zeroed) and `Gray8` (thresholded at 128 by default).
-
-## Standalone vs registry-integrated
-
-The crate's default `registry` Cargo feature pulls in `oxideav-core`
-and exposes the framework `Decoder` / `Encoder` trait surface plus a
-`registry::register` entry point. Disable the feature
-(`default-features = false`) for an `oxideav-core`-free build that
-still exposes the standalone `parse_wbmp` / `encode_wbmp` /
-`encode_wbmp_from_threshold` API and the crate-local `WbmpImage` /
-`WbmpError` / `WbmpPixelFormat` types.
-
-## Registration
-
-```rust
-let mut codecs = oxideav_core::CodecRegistry::new();
-let mut containers = oxideav_core::ContainerRegistry::new();
-oxideav_wbmp::register(&mut codecs, &mut containers);
-```
-
-## Resource limits
-
-`parse_wbmp` enforces a default [`WbmpLimits`] (max width 16 384, max
-height 16 384, max packed pixel-data 8 MiB) so an attacker-crafted
-header carrying `u32::MAX × u32::MAX` dimensions can't make the decoder
-allocate hundreds of gigabytes. Headers exceeding any limit return
-`WbmpError::LimitExceeded` (mapped to
-`oxideav_core::Error::ResourceExhausted` under `registry`) *before*
-the decoder touches its allocator.
-
-Callers that need to admit larger images:
-
-```rust
-use oxideav_wbmp::{parse_wbmp_with_limits, WbmpLimits};
-let img = parse_wbmp_with_limits(&buf, &WbmpLimits::unbounded())?;
-```
-
-The MBI decoder is similarly bounded: `MAX_MBI_BYTES = 7` caps the
-length of any single MBI sequence (5 bytes for the minimal `u32`
-encoding + a 2-byte allowance for leading `0x80` padding the spec
-text doesn't outlaw). Pathological continuation-byte runs error in
-O(1) rather than chasing the input.
+WAP-237 §4.2 defines `Image-data = Main-image 0*15Animated-image`:
+after the single header, the main image's `stride × height` bytes are
+followed by 0..15 further packed bitmaps of the **same** dimensions —
+no per-frame header, no timing ("It is User Agent dependent how those
+animated images are processed", §4.5.1). `decode_all` returns every
+frame in stream order (`Frame::index` 0 = main image, `delay` always
+`None`), `info().frames` counts them from the buffer length without
+reading a pixel, and `encode_frames` writes them back; a trailing run
+shorter than one frame is ignorable padding. `max_bytes` bounds each
+frame's plane; the §4.5.1 cap bounds the total at 16 planes.
 
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
 in [`fuzz/`](fuzz/) with twelve libFuzzer targets, all crash-free under
 sustained sweeps with bounded RSS (the allocation guards hold against
-adversarial headers):
+adversarial headers). Every target builds the crate with
+`default-features = false`, so the harness exercises the framework-free
+standalone path and never links `oxideav-core`.
 
-* `decode` — feeds arbitrary bytes to `parse_wbmp`; the decoder must
-  return a `Result` and never panic / abort / OOM. The classic overflow
-  spots are the multi-byte width/height MBI parse and the
-  `stride * height` pixel-buffer allocation; both are guarded
-  (`checked_mul`, the `MAX_MBI_BYTES` ceiling, the default `WbmpLimits`)
-  and this target keeps them honest.
-* `roundtrip` — synthesises a valid Type-0 file from fuzz-controlled
-  small dimensions + packed bits, decodes it, and asserts dimensions and
-  plane bytes survive the round trip bit-for-bit.
-* `threshold` — synthesises an 8-bit grayscale plane from fuzz-controlled
-  small dimensions + a fuzz-controlled threshold, runs
-  `encode_wbmp_from_threshold`, decodes the produced file, and asserts
-  (a) the packed bits match a bit-by-bit reference that walks the
-  grayscale buffer column-by-column setting bit `7 - x%8` whenever
-  `gray[y*w + x] >= threshold`, and (b) the padding bits in the last
-  byte of every row are zero regardless of the input grayscale values.
-  This covers the only public entry point with non-trivial per-pixel
-  logic that the other two targets miss — the chunked-eight-pixels-
-  per-output-byte main loop plus the 1..=7-pixel tail branch.
-* `dither` — synthesises an 8-bit grayscale plane from fuzz-controlled
-  small dimensions, runs `encode_wbmp_from_dither` (Floyd–Steinberg
-  error-diffusion), decodes the produced file, and asserts (a)
-  dimensions / stride survive the round trip, (b) the padding bits in
-  the last byte of every row are zero — the dither path writes its
-  output via `row_out[x >> 3] |= bit` and must never touch the padding
-  tail — and (c) the saturated-input agreement against
-  `encode_wbmp_from_threshold(.., 128)`: after clamping every input
-  sample to `{0, 255}` the two helpers must produce byte-identical
-  files, since saturated samples propagate zero residual. Covers the
-  only stateful per-pixel encoder path (i16 accumulator + per-row
-  cur/next swap with `saturating_add` clamping) — failure modes the
-  other three targets miss.
-* `polarity` — synthesises a canonical (padding-bit-masked) `MonoWhite`
-  plane from fuzz-controlled small dimensions, encodes it, decodes it
-  twice (once verbatim via `parse_wbmp`, once polarity-flipped via
-  `parse_wbmp_as(MonoBlack)`), and asserts (a) the verbatim decode
-  matches the input plane byte-for-byte, (b) the polarity-flipped
-  plane equals the inverted-and-padding-masked reference computed from
-  the input plane, and (c) the trailing padding bits in the last byte
-  of every row of the `MonoBlack` plane are zero. Covers the in-place
-  bit-inversion + per-row trailing-padding-bit re-zero logic in
-  `parse_wbmp_as` — the only entry point with non-trivial per-byte
-  mutation logic that the other four targets don't reach. The
-  failure modes it catches that the others would miss are off-by-one
-  errors in the per-row "last byte of the row" indexing during the
-  in-place padding mask, skipping the mask when `pad_bits == 0`
-  (full-byte width), and conditional-mask boundary errors when
-  `pad_bits` is 1 or 7.
-* `header_ext` — feeds arbitrary bytes to `parse_header_ext`, the
-  general-form header parser (WAP-237 §4.4.1–§4.4.3) that decodes the
-  `FixHeaderField` bitfields and, when the bit-7 presence flag is set,
-  the variable-length `ExtFields` region before reading the
-  `Width`/`Height` MBIs. Asserts (a) the call always returns a `Result`
-  and never panics / overflows / reads past the slice, (b) a successful
-  parse reports non-zero dimensions and a `data_offset` within the
-  input, (c) the parsed `ExtFields` option matches the FixHeaderField
-  bit-7 flag, and (d) any decoded `ExtFields` survives a
-  `write_ext_fields` → `parse_ext_fields` round trip (same region, same
-  consumed byte count) whenever the region is writer-representable.
-  Covers the extension-header state machine — the 2-bit type selector
-  between the type-00 continuation-bit bitfield chain, the type-01/10
-  single reserved octets, and the type-11 parameter/value-pair chain
-  with attacker-chosen per-pair identifier/value sizes, plus the
-  `MAX_EXT_FIELD_BYTES` chain caps and the offset-advance arithmetic
-  feeding the trailing dimension MBIs — the most attacker-driven control
-  flow in the crate.
-* `header_ext_strict` — feeds arbitrary bytes to
-  `parse_header_ext_strict`, the only target reaching the strict
-  character-class state machine (`parse_ext_fields_strict`) and the
-  strict-MBI gating on the extension-aware path. Asserts the refinement
-  invariants: (a) the call always returns a `Result` (no panic /
-  debug-overflow / out-of-bounds), (b) **strict ⊆ lax** — every
-  strict-accepted stream is lax-accepted and decodes byte-identically, so
-  strict only ever rejects and never alters the decode, (c) a
-  strict-accepted Type-11 region's every parameter passes
-  `Parameter::validate` and has UTF-8 `identifier_str` / `value_str`
-  accessors, and (d) the region survives a `write_ext_fields_strict` →
-  `parse_ext_fields_strict` round trip consuming exactly the written
-  bytes. Covers the §4.4.3 ABNF character-class enforcement
-  (identifier = US-ASCII `CHAR`, value = `ALPHA / DIGIT`) and the §4.3.1
-  shortest-MBI check on the extension-aware header path — neither of which
-  the lax `header_ext` target reaches.
-* `decode_ext` — feeds arbitrary bytes to `parse_wbmp_ext`, the
-  extension-header-aware full decode path. It is the only target that
-  walks a fuzz-controlled-length `ExtFields` region and then performs
-  the pixel-body length check + verbatim row copy whose `data_offset`
-  begins past that variable region. Asserts the call always returns a
-  `Result` without panicking / overflowing / reading past the slice,
-  and that a successful decode yields exactly one packed plane whose
-  data length equals `stride * height`. Covers `decode_body`'s
-  post-ExtFields body slice index, the `total_bytes` vs. body-length
-  comparison, and the limit checks applied to dimensions read after the
-  ExtFields — none of which `header_ext` (header-only) reaches.
-* `frames` — exercises the animated-sub-image entry points
-  `parse_wbmp_frames` / `encode_wbmp_frames` (WAP-237 §4.2 / §4.5.1),
-  the only public surface the other seven targets never reach. Two
-  halves share one fuzz input. The **decode** half feeds arbitrary
-  bytes to `parse_wbmp_frames` and asserts the call always returns a
-  `Result` without panicking / overflowing / reading past the slice,
-  and on a successful decode that the `WbmpAnimation` is
-  self-consistent: 1..=`1 + MAX_ANIMATED_IMAGES` (16) frames, every
-  plane exactly `stride * height` bytes, the `animated_count` /
-  `is_animated` helpers agreeing with `frames.len()`, and `main_image()`
-  reproducing `frames[0]` and the single-frame `parse_wbmp` plane of the
-  same buffer. The **encode** half synthesises 1..=16 distinct
-  same-dimension packed planes, round-trips them through
-  `encode_wbmp_frames` → `parse_wbmp_frames`, and asserts every plane
-  survives byte-for-byte **in stream order** (so a frame-ordering or
-  back-to-back-layout bug surfaces as a mismatch) plus the documented
-  single-frame `encode_wbmp` byte-equivalence. Covers the §4.5.1
-  frame-count cap, the no-per-frame-header back-to-back plane layout,
-  and the trailing-run-shorter-than-a-frame ignorable-padding posture —
-  none of which the seven single-frame targets reach.
-* `mbi` — drives the Multi-Byte Integer codec directly (`write_mbi_u32` /
-  `read_mbi_u32` / `read_mbi_u32_strict` / `mbi_u32_len`), the encoding
-  every header field is built from, which the other targets reach only
-  transitively through a whole-header parse. The **writer** half round-
-  trips a `u32` from the fuzz bytes and asserts the §4.3.1 invariants: the
-  first octet is never `0x80` (shortest encoding), every non-final octet
-  sets its continuation bit and the final one clears it, the length is
-  1..=5 and equals `mbi_u32_len`, and both readers recover the exact value
-  consuming all emitted bytes. The **reader** half feeds arbitrary bytes to
-  both readers (no panic / overflow / over-read), asserts **strict ⊆ lax**
-  (same value + consumption when strict accepts), and that any lax success
-  consumes 1..=`len` octets no fewer than the value's minimal form (leading
-  `0x80` padding only ever adds octets). The only target driving the writer
-  across the full value space.
-* `strict_decode` — drives `parse_wbmp_strict` /
-  `parse_wbmp_strict_with_limits`, the fully-conformant whole-image decode
-  (the `FixHeaderField` MUST be `0x00`, dimension MBIs read with the §4.3.1
-  shortest-encoding check). Asserts the call always returns and that
-  **strict ⊆ lax**: a strict-accepted stream decodes byte-identically
-  through `parse_wbmp` (same width / height / polarity / stride / plane),
-  so strict only ever rejects and never alters the decode. The only target
-  reaching the strict whole-image path — `decode` drives lax `parse_wbmp`
-  and `header_ext_strict` drives the presence-bit-tolerant
-  `parse_header_ext_strict`.
-* `encode_ext` — round-trips the general-form extension-header *writer*
-  `encode_wbmp_ext` (§4.4.1) through `parse_wbmp_ext` for every `ExtFields`
-  variant (`None`, `Bitfield00`, `Reserved01`, `Reserved10`,
-  `ParameterPairs11`), both lax and strict. Asserts the image (width /
-  height / plane bytes) and the `ExtFields` survive byte-for-byte and that
-  a `None` ext field yields an `encode_wbmp`-identical stream. The only
-  target closing the encode → decode loop over the full file writer —
-  `header_ext` round-trips only the region-level `write_ext_fields` and
-  `decode_ext` only reads.
-
-All nine build with `default-features = false`, so the harness
-exercises the framework-free standalone path and never links
-`oxideav-core`. Run:
+* `decode` — arbitrary bytes through the whole contract read side
+  (`probe`, `info`, `decode`, strict and `MonoWhite` `decode_with`,
+  `decode_all`, `decode_rgb8`, `decode_rgba8`) with the cross-function
+  invariants pinned: `probe ⇒ info`, `info` + complete body ⇒ `decode`,
+  `decode_all().len() == info.frames`, strict ⊆ lenient, inverse
+  polarity = bytewise inversion with zero padding, raw paths = 0 / 255
+  expansion.
+* `decode_ext` — arbitrary bytes through the lenient `decode` + `info`
+  pair over a fuzz-controlled-length extension-header region followed
+  by the body copy.
+* `strict_decode` — strict `decode_with` over arbitrary bytes; strict ⊆
+  lenient with identical pixels, strict-accepted streams have
+  `FixHeaderField == 0x00`.
+* `header_ext` / `header_ext_strict` — the general-form header walk
+  (`info`, and the depth `parse_header_ext_strict`) plus a
+  `write_ext_fields` → `parse_ext_fields` round trip of any decoded
+  region, lax and strict.
+* `roundtrip` / `polarity` — synthesise a canonical plane, `encode`,
+  `decode` (both polarities), assert bit-exact survival and the
+  documented inversion + padding mask.
+* `threshold` / `dither` — synthesise an 8-bit grey plane, `encode_gray8`
+  with each `Quantize` rule, decode, compare against a bit-by-bit
+  reference (threshold) and the saturated-input agreement (dither).
+* `frames` — `decode_all` over arbitrary bytes (frame count, geometry,
+  `info` agreement, frame 0 == `decode`) and a 1..=16-frame
+  `encode_frames` → `decode_all` round trip.
+* `encode_ext` — `encode` with every `ExtFields` variant, lax and strict,
+  round-tripped through `decode` / `info`.
+* `mbi` — the Multi-Byte Integer codec across the full `u32` value
+  space (§4.3.1 invariants) and arbitrary reader input (strict ⊆ lax).
 
 ```sh
-cargo +nightly fuzz run decode
-cargo +nightly fuzz run roundtrip
-cargo +nightly fuzz run threshold
-cargo +nightly fuzz run dither
-cargo +nightly fuzz run polarity
-cargo +nightly fuzz run header_ext
-cargo +nightly fuzz run header_ext_strict
-cargo +nightly fuzz run decode_ext
-cargo +nightly fuzz run frames
+cargo +nightly fuzz run decode     # or any of the targets above
 ```
 
 ## Benchmarks
 
-A Criterion suite in [`benches/`](benches/) covers the three hot paths
-end-to-end (`decode`, `encode`, full encode-→-decode `roundtrip`) at
-six representative sizes: 8×8 (per-call overhead), 96×64 (WAP-era
-handset), 320×240 (QVGA, 2-byte width MBI), 159×33 (odd-width padding-
-bit boundary), 1024×1024 (mid-size wallpaper) and 2048×2048
-(largest fixture still admitted by the default `WbmpLimits`
-8 MiB pixel cap). The `encode` bench also exercises
-`encode_wbmp_from_threshold` and `encode_wbmp_from_dither` on a
-320×240 grayscale fixture — the two per-pixel hot loops in the
-encoder, useful as an A/B for tracking the dither path's per-pixel
-cost separately from the threshold branch-and-set loop.
-
-A fourth bench, `frames`, covers the multi-frame (animation) path that
-the single-image benches never reach: `encode_wbmp_frames` →
-`parse_wbmp_frames` (WAP-237 §4.2 / §4.5.1, a main image plus 0..15
-same-dimension animated sub-images). It sweeps the frame count
-(96×64 × {1, 4, 16} and 320×240 × 8) so the per-frame marginal cost —
-each extra plane is one length check plus a verbatim copy — is visible
-against the fixed single-header overhead that amortises as frames are
-added.
-
-Each scenario synthesises its fixture in-process from a deterministic
-xorshift32 source (no fixture files on disk) so the harness stays
-self-contained. Run with:
+A Criterion suite in [`benches/`](benches/) covers the hot paths
+end-to-end (`decode`, `encode`, full `roundtrip`, and the multi-frame
+`frames` path) at representative sizes: 8×8 (per-call overhead), 96×64
+(WAP-era handset), 320×240 (QVGA, 2-byte width MBI), 159×33 (odd-width
+padding-bit boundary), 1024×1024 and 2048×2048. The `encode` bench also
+exercises `encode_gray8` with the threshold and dither rules on a
+320×240 grayscale fixture. Each scenario synthesises its fixture
+in-process from a deterministic xorshift32 source (no fixture files on
+disk). Run with:
 
 ```sh
 cargo bench -p oxideav-wbmp --bench decode
@@ -494,48 +308,22 @@ cargo bench -p oxideav-wbmp --bench frames
 Indicative numbers on an Apple M1 Pro (release, single core): decode
 tops out around 71 GiB/s on the 2048×2048 fixture (memory-copy bound),
 encode at 60 GiB/s on the 1024×1024 fixture, end-to-end roundtrip at
-22 GiB/s on 1024×1024, and `encode_wbmp_from_threshold` at ~10 GiB/s on
-the 320×240 Gray8 fixture. The dither path is dominated by the
+22 GiB/s on 1024×1024, and the threshold quantiser at ~10 GiB/s on the
+320×240 Gray8 fixture. The dither path is dominated by the
 inherently-sequential Floyd–Steinberg residual diffusion, so its
 headline throughput stays an order of magnitude below the threshold
-path. The `frames` end-to-end roundtrip runs around 6.7 GiB/s on the
-single-frame 96×64 case and rises toward 14–18 GiB/s as the frame
-count grows (the one-time header parse amortises across the swept
-frames, leaving the per-frame copy memory-bound).
-
-## Framework trait surface
-
-The default-on `registry` feature exposes the codec / container behind
-`oxideav-core`'s `Decoder`, `Encoder`, `Demuxer` and `Muxer` traits.
-[`tests/round13_registry_traits.rs`](tests/round13_registry_traits.rs)
-covers that surface end-to-end: round-trips a `MonoWhite` plane
-through `WbmpDecoder::send_packet` → `receive_frame`; routes the same
-plane back through `WbmpEncoder::send_frame` → `receive_packet`;
-asserts the `MonoBlack` polarity path performs the in-place inversion
-+ per-row padding-mask documented in the encoder source; checks
-`Gray8` thresholds at 128 by default through the framework path;
-exercises the `NeedMore` / `Eof` semantics on both directions; calls
-`probe` directly with conformant, garbage and extension-only inputs;
-opens a `WbmpDemuxer` / `WbmpMuxer` pair via
-`ContainerRegistry::open_demuxer` / `open_muxer` and round-trips the
-single-packet container; confirms the muxer rejects audio and
-multi-stream inputs; and walks `register_codecs` to assert
-`CodecCapabilities` advertises `MonoWhite`, `MonoBlack` and `Gray8`
-as accepted pixel formats with `intra_only` + `lossless` set. These
-integration tests are framework-only — the standalone build
-(`--no-default-features`) skips them as expected.
+path.
 
 ## Not supported
 
 * WBMP Type values other than `0`. Later WAP releases reserved Type 1+
   for greyscale / colour bitmaps but never published a normative
   encoding, and no public devices shipped non-Type-0 content. Other
-  Type values raise `WbmpError::Unsupported`.
+  Type values raise `Error::Unsupported`.
 * **Animation timing.** The animated sub-image *frames* are decoded
   (see [Animated sub-images](#animated-sub-images)), but WAP-237 defines
-  no normative animation timing parameters — §4.5.1 leaves it "User
-  Agent dependent how those animated images are processed" — so the
-  crate surfaces the raw frame planes and does not impose a frame rate.
+  no normative animation timing parameters, so `Frame::delay` is always
+  `None` and the registry decoder emits the main image only.
 
 ## License
 

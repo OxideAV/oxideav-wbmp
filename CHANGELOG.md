@@ -6,6 +6,69 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Image-crate API contract (`IMAGE_CRATE_API`) root vocabulary: `probe`,
+  `info -> ImageInfo`, `decode`, `decode_with(&DecodeOptions)`,
+  `decode_rgb8`, `decode_rgba8`, `decode_all` / `decode_all_with ->
+  Vec<Frame>`, `decode_from`, `encode(&WbmpImage, &EncodeOptions)`,
+  `encode_rgb8`, `encode_rgba8`, `encode_gray8`, `encode_to`,
+  `encode_frames`; types `RgbImage`, `RgbaImage`, `Plane`, `ColorInfo`,
+  `ColorRange`, `Metadata`, `ImageInfo`, `Frame`, `DecodeOptions`,
+  `EncodeOptions`, `Quantize`, `PixelFormat` alias, `Error` alias.
+- `WbmpImage` constructors `new` / `packed` / `from_bits` / `from_gray8`
+  / `from_rgb8` / `from_rgba8` (fallible, geometry-validated) and
+  conversions `to_gray8` / `to_rgb8` / `to_rgba8` / `into_format` /
+  `is_white`.
+- `WbmpError::Io(std::io::Error)` (+ `From<std::io::Error>`).
+- Registry: `register(&mut RuntimeContext)`, `register_registries`,
+  `From<WbmpImage> for VideoFrame`, `WbmpImage::from_video_frame` +
+  `TryFrom<(&VideoFrame, &CodecParameters)>`, `to_core_pixel_format` /
+  `from_core_pixel_format`, and a `quantize` / `threshold` encoder
+  options schema (`CodecOptionsStruct` for `EncodeOptions`).
+- Randomised round-trip property test (odd widths, 1..=16-frame
+  animations) and a `ci-standalone` clippy step.
+
+### Changed
+
+- **Polarity fix.** The WBMP wire layout (WAP-237 §4.5.1, 1 = white) is
+  the core `MonoBlack` layout ("0 = black"); the crate used to tag it
+  `MonoWhite`, so registry frames carried inverted meaning.
+  `WbmpPixelFormat::MonoBlack` is now the native layout and
+  `MonoWhite` the inverse — the variant names kept their core meaning,
+  the plane bytes are unchanged. The demuxer advertises `MonoBlack`;
+  `make_decoder` honours a `MonoWhite` request (previously `MonoBlack`).
+  Deprecated `parse_wbmp_as(MonoWhite)` therefore now inverts.
+- `WbmpImage` is `#[non_exhaustive]` with the contract shape: field
+  `pixel_format` is now `format`, `pts` is gone (the registry adapter
+  threads it), `color` and `metadata` were added; `WbmpPlane` is `Plane`.
+- `register(codecs, containers)` is `register_registries`; `register`
+  now takes a `RuntimeContext` (the fleet signature).
+- `decode` (lenient) honours extension headers (§4.4.1) like
+  `parse_wbmp_ext` did; `strict` = Type-0 conformance (`FixHeaderField
+  == 0x00`, shortest MBIs). Default limits are now the contract's 1 GiB
+  packed-plane cap with no dimension cap (`WbmpLimits` was 16384 /
+  16384 / 8 MiB; the deprecated wrappers keep those).
+- `WbmpError` no longer derives `Clone` / `PartialEq` and is
+  `#[non_exhaustive]`.
+- Fuzz targets, benches and integration tests drive the contract
+  surface; `tests/roundtrip.rs` became `tests/image_crate_api.rs`,
+  `tests/round13_registry_traits.rs` became `tests/registry_traits.rs`.
+
+### Deprecated
+
+- `parse_wbmp`, `parse_wbmp_with_limits`, `parse_wbmp_strict`,
+  `parse_wbmp_strict_with_limits`, `parse_wbmp_as`,
+  `parse_wbmp_as_with_limits`, `parse_wbmp_ext`,
+  `parse_wbmp_ext_with_limits`, `parse_wbmp_frames`,
+  `parse_wbmp_frames_with_limits`, `WbmpAnimation`, `WbmpImageExt`,
+  `parse_header`, `parse_header_strict`, `parse_header_ext`,
+  `parse_header_ext_strict`, `Header`, `HeaderExt`, `encode_wbmp`,
+  `encode_wbmp_ext`, `encode_wbmp_frames`, `encode_wbmp_from_threshold`,
+  `encode_wbmp_from_dither`, `WbmpLimits` (+ `From<WbmpLimits> for
+  DecodeOptions`), `WbmpPlane`, `register_runtime` — thin wrappers for
+  one release; each note names the contract replacement.
+
 ## [0.0.3](https://github.com/OxideAV/oxideav-wbmp/compare/v0.0.2...v0.0.3) - 2026-07-18
 
 ### Other
