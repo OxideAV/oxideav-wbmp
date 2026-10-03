@@ -5,18 +5,18 @@
 //!
 //! WBMP is lossless and bit-exact: a packed 1-bit plane prepended with
 //! a header must decode back to the same dimensions and the same plane
-//! bytes. There is no standard system library worth pulling in as a
+//! bytes (padding bits normalised to zero by the encoder). There is no standard system library worth pulling in as a
 //! cross-decode oracle (and the clean-room wall bars any external WBMP
-//! source), so this is a **self-roundtrip** target: `encode_wbmp` →
-//! `parse_wbmp` → compare.
+//! source), so this is a **self-roundtrip** target: `encode` →
+//! `decode` → compare.
 //!
 //! The fuzzer drives the dimensions (kept small so the body stays
-//! within the default `WbmpLimits` the decoder applies) and the packed
+//! within the default `DecodeOptions` the decoder applies) and the packed
 //! bits; the body is sized to exactly `ceil(width / 8) * height` so the
 //! encoder accepts it.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_wbmp::{encode_wbmp, parse_wbmp, WbmpPixelFormat};
+use oxideav_wbmp::{decode, encode, EncodeOptions, PixelFormat, WbmpImage};
 
 fuzz_target!(|data: &[u8]| {
     // Need at least two bytes for the dimension nibbles.
@@ -47,7 +47,20 @@ fuzz_target!(|data: &[u8]| {
         });
     }
 
-    let encoded = match encode_wbmp(width, height, &mono_bits) {
+    // `encode` normalises the padding bits of every row to zero (the
+    // WBMP convention), so the byte-exact expectation is the canonical
+    // plane; the raw (possibly dirty-padded) plane must still describe
+    // the same picture.
+    let raw = WbmpImage::from_bits(width, height, mono_bits.clone()).expect("valid geometry");
+    let pad_bits = stride * 8 - width as usize;
+    if pad_bits > 0 {
+        let mask: u8 = 0xFFu8 << pad_bits;
+        for row in mono_bits.chunks_exact_mut(stride) {
+            row[stride - 1] &= mask;
+        }
+    }
+
+    let encoded = match encode(&raw, &EncodeOptions::default()) {
         Ok(v) => v,
         // A zero dimension is impossible here (both are >= 1), so any
         // error would be a genuine encoder bug — but we still return
@@ -56,15 +69,25 @@ fuzz_target!(|data: &[u8]| {
         Err(_) => return,
     };
 
-    let image = parse_wbmp(&encoded).expect("valid encoded WBMP must decode");
+    let image = decode(&encoded).expect("valid encoded WBMP must decode");
 
     assert_eq!(image.width, width, "width survives round trip");
     assert_eq!(image.height, height, "height survives round trip");
-    assert_eq!(image.pixel_format, WbmpPixelFormat::MonoWhite);
+    assert_eq!(image.format, PixelFormat::MonoBlack);
     assert_eq!(image.planes.len(), 1, "WBMP carries exactly one plane");
     assert_eq!(image.planes[0].stride, stride, "stride survives round trip");
     assert_eq!(
         image.planes[0].data, mono_bits,
         "plane bytes survive round trip"
+    );
+    assert_eq!(
+        image.to_gray8(),
+        raw.to_gray8(),
+        "same picture as the raw input"
+    );
+    assert_eq!(
+        encode(&image, &EncodeOptions::default()).expect("re-encode"),
+        encoded,
+        "encode is idempotent on a decoded image"
     );
 });

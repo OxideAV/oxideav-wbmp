@@ -3,7 +3,7 @@
 //! Threshold-encode a fuzz-controlled 8-bit grayscale buffer and
 //! self-round-trip the result.
 //!
-//! `encode_wbmp_from_threshold` is the only public entry point with
+//! `encode_gray8` with `Quantize::Threshold` is the only entry point with
 //! non-trivial per-pixel logic that the existing `decode` and
 //! `roundtrip` fuzz targets don't exercise. It walks an 8-bit grayscale
 //! buffer of exactly `width * height` bytes, packs eight comparisons
@@ -25,10 +25,10 @@
 //!
 //! The fuzzer derives width, height and threshold from the first three
 //! input bytes (kept small enough that the synthesised gray buffer
-//! stays within the default `WbmpLimits` the decoder applies after the
+//! stays within the default `DecodeOptions` the decoder applies after the
 //! encode), pads the remaining fuzz bytes to the required
-//! `width * height` length, runs `encode_wbmp_from_threshold`, decodes
-//! the produced file with `parse_wbmp`, and asserts:
+//! `width * height` length, runs `encode_gray8` (threshold), decodes
+//! the produced file with `decode`, and asserts:
 //!
 //!  * dimensions survive the round trip,
 //!  * the decoded plane bytes match the locally-recomputed expected
@@ -40,7 +40,7 @@
 //! `oxideav-core` and exercises only the framework-free encode path.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_wbmp::{encode_wbmp_from_threshold, parse_wbmp, WbmpImage, WbmpPixelFormat};
+use oxideav_wbmp::{decode, encode_gray8, EncodeOptions, PixelFormat, WbmpImage};
 
 fuzz_target!(|data: &[u8]| {
     // Need three control bytes plus at least one pixel.
@@ -73,7 +73,12 @@ fuzz_target!(|data: &[u8]| {
         });
     }
 
-    let encoded = match encode_wbmp_from_threshold(width, height, &gray, threshold) {
+    let encoded = match encode_gray8(
+        width,
+        height,
+        &gray,
+        &EncodeOptions::default().with_threshold(threshold),
+    ) {
         Ok(v) => v,
         // The size-check and dimension-check inside the encoder will
         // never fail here (dims >= 1, gray.len() == width * height), so
@@ -86,13 +91,13 @@ fuzz_target!(|data: &[u8]| {
     };
 
     // The produced file must decode bit-for-bit. The default
-    // `WbmpLimits` apply; our 256 × 256 cap keeps every produced file
+    // `DecodeOptions` apply; our 256 × 256 cap keeps every produced file
     // well under them.
-    let image = parse_wbmp(&encoded).expect("threshold-encoded WBMP must decode");
+    let image = decode(&encoded).expect("threshold-encoded WBMP must decode");
 
     assert_eq!(image.width, width, "width survives round trip");
     assert_eq!(image.height, height, "height survives round trip");
-    assert_eq!(image.pixel_format, WbmpPixelFormat::MonoWhite);
+    assert_eq!(image.format, PixelFormat::MonoBlack);
     assert_eq!(image.planes.len(), 1, "WBMP carries exactly one plane");
 
     let stride = WbmpImage::row_stride(width);

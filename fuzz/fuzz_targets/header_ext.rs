@@ -1,14 +1,14 @@
 #![no_main]
 
-//! Drive arbitrary fuzz-supplied bytes through `parse_header_ext` — the
+//! Drive arbitrary fuzz-supplied bytes through `info` — the
 //! general-form WBMP header parser (WAP-237 §4.4.1–§4.4.3) that decodes
 //! the `FixHeaderField` bitfields and, when its bit-7 presence flag is
 //! set, the variable-length `ExtFields` region before reading the
 //! `Width`/`Height` MBIs.
 //!
-//! The other targets exercise `parse_wbmp` (which uses the plain
-//! four-field `parse_header`, treating the FixHeaderField as opaque) and
-//! the encoder paths; none of them reach the extension-header machinery.
+//! The strict decode path treats a non-zero FixHeaderField as a
+//! conformance error and the encoder paths never read one; only the
+//! lenient `info` / `decode` reach the extension-header machinery.
 //! That machinery has the most attacker-driven control flow in the
 //! crate: a 2-bit type selector picking between a continuation-bit
 //! bitfield chain (type 00), two single-octet reserved forms (types 01 /
@@ -19,7 +19,7 @@
 //! `MAX_EXT_FIELD_BYTES` chain caps, and the dimension MBIs whose offset
 //! now starts after a fuzz-controlled-length ExtFields region.
 //!
-//! Contract under test: `parse_header_ext` must always *return* a
+//! Contract under test: `info` must always *return* a
 //! `Result` — a malformed stream yields `Err(WbmpError::…)`, a
 //! well-formed one yields `Ok(HeaderExt)`, and neither path may panic,
 //! integer-overflow (debug build), index out of bounds, or read past the
@@ -34,15 +34,16 @@
 //! `oxideav-core`.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_wbmp::{parse_ext_fields, parse_header_ext, write_ext_fields};
+use oxideav_wbmp::{info, parse_ext_fields, write_ext_fields, FixHeaderField};
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(header) = parse_header_ext(data) else {
+    let Ok(header) = info(data) else {
         return;
     };
+    let fix_header = FixHeaderField::from_byte(header.fix_header);
 
     // A successful parse must report dimensions the spec guarantees are
-    // non-zero (parse_header_ext rejects a zero width/height) and a
+    // non-zero (`info` rejects a zero width/height) and a
     // data_offset that lands within or at the end of the input — never
     // past it, since every field was read from `data`.
     assert!(header.width >= 1, "decoded width is at least 1");
@@ -57,7 +58,7 @@ fuzz_target!(|data: &[u8]| {
     // The FixHeaderField presence flag and the parsed ExtFields option
     // must agree: ext_fields is Some iff the bit-7 flag was set.
     assert_eq!(
-        header.fix_header.ext_fields_follow,
+        fix_header.ext_fields_follow,
         header.ext_fields.is_some(),
         "ExtFields presence matches the FixHeaderField bit-7 flag"
     );
@@ -74,7 +75,7 @@ fuzz_target!(|data: &[u8]| {
         let mut buf = Vec::new();
         if write_ext_fields(&ext, &mut buf).is_ok() {
             let mut offset = 0usize;
-            let reparsed = parse_ext_fields(header.fix_header, &buf, &mut offset)
+            let reparsed = parse_ext_fields(fix_header, &buf, &mut offset)
                 .expect("written ExtFields must re-parse");
             assert_eq!(
                 reparsed,

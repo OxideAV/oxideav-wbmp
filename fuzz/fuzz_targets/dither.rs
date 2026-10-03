@@ -3,7 +3,7 @@
 //! Dither-encode a fuzz-controlled 8-bit grayscale buffer and
 //! self-round-trip the result.
 //!
-//! `encode_wbmp_from_dither` is the WBMP encoder's only stateful
+//! `encode_gray8` with `Quantize::Dither` is the WBMP encoder's only stateful
 //! per-pixel path: every pixel reads an accumulator that the previous
 //! pixel just wrote, and every row writes a scratch buffer the next
 //! row will consume. That is more arithmetic-heavy than the
@@ -14,10 +14,10 @@
 //!
 //! The fuzzer derives width and height from the first two input bytes
 //! (kept small so the synthesised gray buffer stays comfortably under
-//! the default `WbmpLimits` cap the decoder applies after the encode),
+//! the default `DecodeOptions` cap the decoder applies after the encode),
 //! pads the remaining fuzz bytes to the required `width * height`
-//! length by cycling, runs `encode_wbmp_from_dither`, decodes the
-//! produced file with `parse_wbmp`, and asserts the structural
+//! length by cycling, runs `encode_gray8` (dither), decodes the
+//! produced file with `decode`, and asserts the structural
 //! invariants:
 //!
 //!  * dimensions survive the round trip,
@@ -27,7 +27,7 @@
 //!    pixels but must never write to the padding tail),
 //!  * for the pure-black / pure-white saturated-input case the dither
 //!    output agrees byte-for-byte with
-//!    `encode_wbmp_from_threshold(.., 128)` — saturated samples
+//!    `encode_gray8` at threshold 128 — saturated samples
 //!    propagate zero residual, so the two helpers are documented to
 //!    match on this case.
 //!
@@ -36,9 +36,7 @@
 //! `oxideav-core` and exercises only the framework-free encode path.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_wbmp::{
-    encode_wbmp_from_dither, encode_wbmp_from_threshold, parse_wbmp, WbmpImage, WbmpPixelFormat,
-};
+use oxideav_wbmp::{decode, encode_gray8, EncodeOptions, PixelFormat, WbmpImage};
 
 fuzz_target!(|data: &[u8]| {
     // Need two control bytes plus at least one pixel.
@@ -68,7 +66,12 @@ fuzz_target!(|data: &[u8]| {
         });
     }
 
-    let encoded = match encode_wbmp_from_dither(width, height, &gray) {
+    let encoded = match encode_gray8(
+        width,
+        height,
+        &gray,
+        &EncodeOptions::default().with_dither(),
+    ) {
         Ok(v) => v,
         // Dimensions >= 1 and gray.len() == width * height, so an Err
         // here would be a genuine encoder bug. Treat it as
@@ -77,10 +80,10 @@ fuzz_target!(|data: &[u8]| {
         Err(_) => return,
     };
 
-    let image = parse_wbmp(&encoded).expect("dither-encoded WBMP must decode");
+    let image = decode(&encoded).expect("dither-encoded WBMP must decode");
     assert_eq!(image.width, width, "width survives round trip");
     assert_eq!(image.height, height, "height survives round trip");
-    assert_eq!(image.pixel_format, WbmpPixelFormat::MonoWhite);
+    assert_eq!(image.format, PixelFormat::MonoBlack);
     assert_eq!(image.planes.len(), 1, "WBMP carries exactly one plane");
 
     let stride = WbmpImage::row_stride(width);
@@ -116,10 +119,20 @@ fuzz_target!(|data: &[u8]| {
     for byte in clamped.iter_mut() {
         *byte = if *byte >= 128 { 255 } else { 0 };
     }
-    let dith_sat = encode_wbmp_from_dither(width, height, &clamped)
-        .expect("saturated dither encode must succeed");
-    let thr_sat = encode_wbmp_from_threshold(width, height, &clamped, 128)
-        .expect("saturated threshold encode must succeed");
+    let dith_sat = encode_gray8(
+        width,
+        height,
+        &clamped,
+        &EncodeOptions::default().with_dither(),
+    )
+    .expect("saturated dither encode must succeed");
+    let thr_sat = encode_gray8(
+        width,
+        height,
+        &clamped,
+        &EncodeOptions::default().with_threshold(128),
+    )
+    .expect("saturated threshold encode must succeed");
     assert_eq!(
         dith_sat, thr_sat,
         "saturated 0/255 input: dither must agree byte-for-byte with threshold-at-128",

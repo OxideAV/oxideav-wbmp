@@ -1,11 +1,11 @@
 #![no_main]
 
 //! Encode a fuzz-controlled WBMP Type-0 image, decode it once as the
-//! on-disk `MonoWhite` polarity and once as the inverted `MonoBlack`
-//! polarity, and assert the two planes agree under the documented
-//! in-place inversion + padding-mask transform.
+//! on-disk `MonoBlack` polarity (core naming: 1 = white) and once as the
+//! inverted `MonoWhite` polarity, and assert the two planes agree under
+//! the documented in-place inversion + padding-mask transform.
 //!
-//! Covers `parse_wbmp_as(MonoBlack)` — the only entry point with the
+//! Covers `DecodeOptions::format = MonoWhite` — the only entry point with the
 //! in-place bit-inversion + per-row trailing-padding-bit re-zero logic
 //! that the other four targets (`decode`, `roundtrip`, `threshold`,
 //! `dither`) don't reach. Failure modes the existing targets miss:
@@ -17,7 +17,7 @@
 //!   * Conditional-mask boundaries when `pad_bits` is 1 or 7.
 //!
 //! The fuzzer drives small dimensions (kept under the default
-//! `WbmpLimits` so a valid encode always round-trips) and a packed
+//! `DecodeOptions` so a valid encode always round-trips) and a packed
 //! 1-bit body; the body is sized to exactly `ceil(width / 8) * height`
 //! so the encoder accepts it. Trailing padding bits in each row of the
 //! encoder input are pre-masked to zero so the `MonoWhite` plane is
@@ -25,7 +25,9 @@
 //! under test.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_wbmp::{encode_wbmp, parse_wbmp, parse_wbmp_as, WbmpPixelFormat};
+use oxideav_wbmp::{
+    decode, decode_with, encode, DecodeOptions, EncodeOptions, PixelFormat, WbmpImage,
+};
 
 fuzz_target!(|data: &[u8]| {
     // Need at least two bytes for the dimension nibbles.
@@ -36,7 +38,7 @@ fuzz_target!(|data: &[u8]| {
     // Derive small, in-bounds dimensions from the first two bytes.
     // Range 1..=256 on each axis keeps the worst-case body (256-wide ×
     // 256-tall = 32 bytes/row × 256 = 8 KiB) under the default
-    // `max_pixel_bytes` (8 MiB) so a valid encode always round-trips.
+    // byte cap so a valid encode always round-trips.
     let width: u32 = u32::from(data[0]) + 1;
     let height: u32 = u32::from(data[1]) + 1;
 
@@ -55,7 +57,7 @@ fuzz_target!(|data: &[u8]| {
 
     // Pre-mask the trailing padding bits in every row so the input
     // plane is well-formed (canonical) before encoding. The padding
-    // bits of the *MonoWhite* on-disk layout are zero by convention;
+    // bits of the on-disk layout are zero by convention;
     // re-zeroing them keeps the post-polarity-flip mask the only test
     // subject below.
     let pad_bits = stride * 8 - width as usize;
@@ -67,29 +69,41 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    let encoded = match encode_wbmp(width, height, &mono_bits) {
+    let encoded = match WbmpImage::from_bits(width, height, mono_bits.clone())
+        .and_then(|img| encode(&img, &EncodeOptions::default()))
+    {
         Ok(v) => v,
         Err(_) => return,
     };
 
     // Reference decode: must produce the input plane verbatim.
-    let img_white = parse_wbmp(&encoded).expect("valid encoded WBMP must decode (white)");
-    assert_eq!(img_white.pixel_format, WbmpPixelFormat::MonoWhite);
+    let img_white = decode(&encoded).expect("valid encoded WBMP must decode (wire)");
+    assert_eq!(img_white.format, PixelFormat::MonoBlack);
     assert_eq!(img_white.planes[0].stride, stride);
     assert_eq!(img_white.planes[0].data, mono_bits);
 
     // Polarity-flipped decode: every payload byte inverted, padding
     // bits of every row re-zeroed.
-    let img_black =
-        parse_wbmp_as(&encoded, WbmpPixelFormat::MonoBlack).expect("must decode (black)");
-    assert_eq!(img_black.pixel_format, WbmpPixelFormat::MonoBlack);
+    let img_black = decode_with(
+        &encoded,
+        &DecodeOptions::default().with_format(PixelFormat::MonoWhite),
+    )
+    .expect("must decode (inverse polarity)");
+    assert_eq!(img_black.format, PixelFormat::MonoWhite);
+    // Same picture either way.
+    assert_eq!(img_black.to_gray8(), img_white.to_gray8());
+    // Encoding the inverse polarity reproduces the wire bytes.
+    assert_eq!(
+        encode(&img_black, &EncodeOptions::default()).unwrap(),
+        encoded
+    );
     assert_eq!(img_black.width, width);
     assert_eq!(img_black.height, height);
     assert_eq!(img_black.planes[0].stride, stride);
     assert_eq!(img_black.planes[0].data.len(), expected);
 
-    // Re-derive the expected MonoBlack plane from the canonical
-    // MonoWhite reference: invert every byte, then re-mask padding
+    // Re-derive the expected MonoWhite plane from the canonical
+    // wire reference: invert every byte, then re-mask padding
     // bits of the last byte of every row.
     let mut expected_black = mono_bits.clone();
     for b in expected_black.iter_mut() {
@@ -104,11 +118,11 @@ fuzz_target!(|data: &[u8]| {
     }
     assert_eq!(
         img_black.planes[0].data, expected_black,
-        "MonoBlack plane bytes must match inverted-and-padding-masked reference"
+        "MonoWhite plane bytes must match inverted-and-padding-masked reference"
     );
 
     // Per-row sanity: the trailing padding bits of every row of the
-    // returned MonoBlack plane must be zero — this is the only
+    // returned MonoWhite plane must be zero — this is the only
     // post-condition the existing targets don't pin.
     if pad_bits > 0 && stride > 0 {
         let pad_mask: u8 = !(0xFFu8 << pad_bits);
@@ -117,7 +131,7 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!(
                 img_black.planes[0].data[last] & pad_mask,
                 0,
-                "row {y} of MonoBlack plane has non-zero padding bits"
+                "row {y} of MonoWhite plane has non-zero padding bits"
             );
         }
     }

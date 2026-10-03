@@ -1,4 +1,10 @@
 #![no_main]
+// `parse_header_ext_strict` (strict MBIs + §4.4.3 character classes
+// while still honouring extension headers) has no contract-vocabulary
+// twin — the contract's `strict` is Type-0 conformance, which forbids
+// ExtFields outright — so this target keeps driving the deprecated
+// depth entry point.
+#![allow(deprecated)]
 
 //! Drive arbitrary fuzz-supplied bytes through `parse_header_ext_strict`
 //! — the fully-conformant general-form WBMP header parser (WAP-237
@@ -31,8 +37,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use oxideav_wbmp::{
-    parse_ext_fields_strict, parse_header_ext, parse_header_ext_strict, write_ext_fields_strict,
-    ExtFields,
+    info, parse_ext_fields_strict, parse_header_ext_strict, write_ext_fields_strict, ExtFields,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -55,11 +60,19 @@ fuzz_target!(|data: &[u8]| {
         "ExtFields presence matches the FixHeaderField bit-7 flag"
     );
 
-    // (2) strict ⊆ lax: anything strict accepts, lax accepts and decodes
-    // to exactly the same HeaderExt. (The strict path only ever tightens
-    // acceptance; it never changes the bytes that come out.)
-    let lax = parse_header_ext(data).expect("lax accepts everything strict accepts");
-    assert_eq!(lax, strict, "strict decode matches lax decode");
+    // (2) strict ⊆ lax: anything strict accepts, the lenient `info`
+    // accepts and reports the same header. (The strict path only ever
+    // tightens acceptance; it never changes the bytes that come out.)
+    let lax = info(data).expect("lax accepts everything strict accepts");
+    assert_eq!(
+        (lax.width, lax.height, lax.data_offset),
+        (strict.width, strict.height, strict.data_offset)
+    );
+    assert_eq!(lax.fix_header, strict.fix_header.raw);
+    assert_eq!(
+        lax.ext_fields, strict.ext_fields,
+        "strict header matches lenient header"
+    );
 
     // (3) a strict-accepted Type-11 region's parameters are all in-class,
     // so Parameter::validate agrees with the reader that accepted them.

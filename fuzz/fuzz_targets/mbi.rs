@@ -43,7 +43,11 @@ fuzz_target!(|data: &[u8]| {
 
         // Length agrees with the size estimator and stays within the
         // 5-octet u32 worst case.
-        assert_eq!(buf.len(), mbi_u32_len(value), "mbi_u32_len == encoded length");
+        assert_eq!(
+            buf.len(),
+            mbi_u32_len(value),
+            "mbi_u32_len == encoded length"
+        );
         assert!(
             (1..=MAX_U32_MBI_BYTES).contains(&buf.len()),
             "encoded length {} out of 1..={MAX_U32_MBI_BYTES}",
@@ -72,8 +76,7 @@ fuzz_target!(|data: &[u8]| {
 
         // The minimal encoding is by definition strict-conformant.
         let mut soff = 0;
-        let sgot =
-            read_mbi_u32_strict(&buf, &mut soff).expect("minimal encoding is strict-valid");
+        let sgot = read_mbi_u32_strict(&buf, &mut soff).expect("minimal encoding is strict-valid");
         assert_eq!(sgot, value, "strict decode round trip");
         assert_eq!(soff, buf.len(), "strict decode consumes all emitted bytes");
     }
@@ -87,7 +90,9 @@ fuzz_target!(|data: &[u8]| {
     // Strict ⊆ lax: whatever strict accepts, lax accepts with the same
     // value and the same consumption.
     if let Ok(sv) = strict {
-        let lv = *lax.as_ref().expect("strict-accepted MBI must also decode lax");
+        let lv = *lax
+            .as_ref()
+            .expect("strict-accepted MBI must also decode lax");
         assert_eq!(sv, lv, "strict/lax value agree");
         assert_eq!(off_strict, off_lax, "strict/lax consumption agree");
     }
@@ -96,7 +101,10 @@ fuzz_target!(|data: &[u8]| {
     // value's minimal encoding is no longer than the octets consumed
     // (leading-0x80 padding only ever adds octets).
     if let Ok(lv) = lax {
-        assert!(off_lax >= 1 && off_lax <= data.len(), "consumption in bounds");
+        assert!(
+            off_lax >= 1 && off_lax <= data.len(),
+            "consumption in bounds"
+        );
         assert!(
             mbi_u32_len(lv) <= off_lax,
             "minimal length {} exceeds consumed {off_lax}",

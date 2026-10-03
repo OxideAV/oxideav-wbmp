@@ -1,35 +1,33 @@
 #![no_main]
 
 //! Round-trip the general-form extension-header *writer* — the only
-//! public surface no other target reaches. `encode_wbmp_ext` (§4.4.1)
+//! public surface no other target reaches. `encode` + `EncodeOptions::ext_fields` (§4.4.1)
 //! synthesises a `TypeField FixHeaderField [ExtFields] Width Height`
 //! header (choosing the FixHeaderField type bits from the `ExtFields`
 //! variant), appends the packed plane, and is the documented inverse of
-//! `parse_wbmp_ext`. `header_ext` only round-trips the region-level
+//! `decode` / `info`. `header_ext` only round-trips the region-level
 //! `write_ext_fields`; `decode_ext` only *reads* arbitrary bytes through
-//! `parse_wbmp_ext`. Neither closes the encode → decode loop over the
+//! `decode` / `info`. Neither closes the encode → decode loop over the
 //! full file writer for every `ExtFields` variant.
 //!
 //! This target synthesises a plane plus one of the four `ExtFields`
 //! variants (`None`, `Bitfield00`, `Reserved01`, `Reserved10`,
 //! `ParameterPairs11`) from the fuzz bytes, encodes it with both the lax
-//! and strict `encode_wbmp_ext`, decodes with `parse_wbmp_ext`, and
+//! and strict `encode` + `EncodeOptions::ext_fields`, decodes with `decode` / `info`, and
 //! asserts:
 //!
 //!  * the image (width / height / plane bytes) survives byte-for-byte;
 //!  * the `ExtFields` survive exactly (Type-00 payload octets are built
 //!    masked to their low 7 bits so the continuation-flag strip on
 //!    decode reproduces them, and Type-11 parameters are built in-class);
-//!  * a `None` ext field makes the output byte-identical to `encode_wbmp`
+//!  * a `None` ext field makes the output byte-identical to `encode`
 //!    (the documented equivalence).
 //!
 //! The crate is pulled in with `default-features = false`, so this build
 //! never links `oxideav-core`.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_wbmp::{
-    encode_wbmp, encode_wbmp_ext, parse_wbmp_ext, ExtFields, Parameter,
-};
+use oxideav_wbmp::{decode, encode, info, EncodeOptions, ExtFields, Parameter, WbmpImage};
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 3 {
@@ -44,11 +42,23 @@ fuzz_target!(|data: &[u8]| {
 
     let stride = (width as usize).div_ceil(8);
     let plane_len = stride * height as usize;
-    // Verbatim plane; encode_wbmp_ext / parse_wbmp_ext copy the body
-    // unchanged, so any byte pattern round-trips regardless of padding.
-    let plane: Vec<u8> = (0..plane_len)
-        .map(|i| if body.is_empty() { 0 } else { body[i % body.len()] })
+    // Canonical plane (padding bits zero): `encode` normalises the
+    // padding, so the round trip is exact on canonical input.
+    let pad = stride * 8 - width as usize;
+    let mask: u8 = if pad == 0 { 0xFF } else { 0xFFu8 << pad };
+    let mut plane: Vec<u8> = (0..plane_len)
+        .map(|i| {
+            if body.is_empty() {
+                0
+            } else {
+                body[i % body.len()]
+            }
+        })
         .collect();
+    for row in plane.chunks_exact_mut(stride) {
+        row[stride - 1] &= mask;
+    }
+    let image = WbmpImage::from_bits(width, height, plane.clone()).expect("valid geometry");
 
     // Build one of the five ext-field shapes from the selector.
     let ext: Option<ExtFields> = match selector % 5 {
@@ -87,19 +97,22 @@ fuzz_target!(|data: &[u8]| {
     // Both the lax and strict writers must round-trip these in-class ext
     // fields identically.
     for &strict in &[false, true] {
-        let encoded = match encode_wbmp_ext(width, height, &plane, ext.as_ref(), strict) {
+        let opts = EncodeOptions::default()
+            .with_ext_fields(ext.clone())
+            .with_strict(strict);
+        let encoded = match encode(&image, &opts) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let decoded = parse_wbmp_ext(&encoded).expect("encoded ext stream must decode");
-        assert_eq!(decoded.image.width, width, "width survives");
-        assert_eq!(decoded.image.height, height, "height survives");
-        assert_eq!(decoded.image.planes[0].data, plane, "plane survives");
-        assert_eq!(decoded.ext_fields, ext, "ext fields survive round trip");
+        let decoded = decode(&encoded).expect("encoded ext stream must decode");
+        assert_eq!(decoded, image, "image survives");
+        let h = info(&encoded).expect("header");
+        assert_eq!(h.ext_fields, ext, "ext fields survive round trip");
+        assert_eq!((h.fix_header & 0x80) != 0, ext.is_some());
 
         if ext.is_none() {
-            let plain = encode_wbmp(width, height, &plane).expect("plain encode");
-            assert_eq!(encoded, plain, "no-ext encode == encode_wbmp");
+            let plain = encode(&image, &EncodeOptions::default()).expect("plain encode");
+            assert_eq!(encoded, plain, "no-ext encode == plain encode");
         }
     }
 });
