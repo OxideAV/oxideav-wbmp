@@ -100,6 +100,25 @@ pub fn read_mbi_u32(bytes: &[u8], offset: &mut usize) -> Result<u32> {
     }
 }
 
+/// Allocation-free twin of [`read_mbi_u32`] for [`crate::probe`]: the
+/// same lax acceptance rules, `None` instead of an error.
+pub(crate) fn peek_mbi_u32(bytes: &[u8], offset: &mut usize) -> Option<u32> {
+    let mut value: u64 = 0;
+    let mut bytes_read: usize = 0;
+    loop {
+        let b = *bytes.get(*offset)?;
+        *offset += 1;
+        bytes_read += 1;
+        value = (value << 7) | (b & 0x7F) as u64;
+        if value > u32::MAX as u64 || bytes_read > MAX_MBI_BYTES {
+            return None;
+        }
+        if (b & 0x80) == 0 {
+            return Some(value as u32);
+        }
+    }
+}
+
 /// Decode a single MBI starting at `bytes[*offset]`, enforcing the
 /// §4.3.1 shortest-encoding requirement.
 ///

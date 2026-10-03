@@ -18,11 +18,11 @@
 //!   - **encode_1024x1024_padded**: 1024×1024 mid-size fixture — checks
 //!     bandwidth scaling against the smaller cases.
 //!   - **encode_threshold_320x240_gray8**: 320×240 grayscale →
-//!     1-bit threshold path via `encode_wbmp_from_threshold`. This
+//!     1-bit threshold path via `encode_gray8` (threshold 128). This
 //!     exercises the per-pixel branch-and-set hot loop, which is the
 //!     only non-trivial work the encoder does.
 //!   - **encode_dither_320x240_gray8**: 320×240 grayscale → 1-bit
-//!     dither path via `encode_wbmp_from_dither`. Exercises the
+//!     dither path via `encode_gray8` + `with_dither()`. Exercises the
 //!     stateful Floyd–Steinberg accumulator + per-row cur/next swap;
 //!     a useful A/B against the threshold scenario to track the
 //!     dither path's per-pixel cost regression-budget separately
@@ -33,7 +33,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-use oxideav_wbmp::{encode_wbmp, encode_wbmp_from_dither, encode_wbmp_from_threshold, WbmpImage};
+use oxideav_wbmp::{encode, encode_gray8, EncodeOptions, WbmpImage};
 
 fn xorshift_byte(state: &mut u32) -> u8 {
     *state ^= *state << 13;
@@ -72,51 +72,66 @@ fn build_gray8(width: u32, height: u32, seed: u32) -> Vec<u8> {
 
 fn bench_encode_8x8_solid(c: &mut Criterion) {
     let bits = build_packed_plane(8, 8, 0x1234_5678);
+    let img = WbmpImage::from_bits(8, 8, bits).expect("image");
     let mut g = c.benchmark_group("encode_8x8_solid");
-    g.throughput(Throughput::Bytes(bits.len() as u64));
+    g.throughput(Throughput::Bytes(
+        img.as_bytes().map_or(0, |b| b.len()) as u64
+    ));
     g.bench_function(BenchmarkId::from_parameter("wbmp/8x8"), |b| {
-        b.iter(|| encode_wbmp(8, 8, criterion::black_box(&bits)).expect("encode"));
+        b.iter(|| encode(criterion::black_box(&img), &EncodeOptions::default()).expect("encode"));
     });
     g.finish();
 }
 
 fn bench_encode_96x64_typical(c: &mut Criterion) {
     let bits = build_packed_plane(96, 64, 0x2345_6789);
+    let img = WbmpImage::from_bits(96, 64, bits).expect("image");
     let mut g = c.benchmark_group("encode_96x64_typical");
-    g.throughput(Throughput::Bytes(bits.len() as u64));
+    g.throughput(Throughput::Bytes(
+        img.as_bytes().map_or(0, |b| b.len()) as u64
+    ));
     g.bench_function(BenchmarkId::from_parameter("wbmp/96x64"), |b| {
-        b.iter(|| encode_wbmp(96, 64, criterion::black_box(&bits)).expect("encode"));
+        b.iter(|| encode(criterion::black_box(&img), &EncodeOptions::default()).expect("encode"));
     });
     g.finish();
 }
 
 fn bench_encode_320x240_qvga(c: &mut Criterion) {
     let bits = build_packed_plane(320, 240, 0x3456_789a);
+    let img = WbmpImage::from_bits(320, 240, bits).expect("image");
     let mut g = c.benchmark_group("encode_320x240_qvga");
-    g.throughput(Throughput::Bytes(bits.len() as u64));
+    g.throughput(Throughput::Bytes(
+        img.as_bytes().map_or(0, |b| b.len()) as u64
+    ));
     g.bench_function(BenchmarkId::from_parameter("wbmp/320x240"), |b| {
-        b.iter(|| encode_wbmp(320, 240, criterion::black_box(&bits)).expect("encode"));
+        b.iter(|| encode(criterion::black_box(&img), &EncodeOptions::default()).expect("encode"));
     });
     g.finish();
 }
 
 fn bench_encode_159x33_odd_width(c: &mut Criterion) {
     let bits = build_packed_plane(159, 33, 0x4567_89ab);
+    let img = WbmpImage::from_bits(159, 33, bits).expect("image");
     let mut g = c.benchmark_group("encode_159x33_odd_width");
-    g.throughput(Throughput::Bytes(bits.len() as u64));
+    g.throughput(Throughput::Bytes(
+        img.as_bytes().map_or(0, |b| b.len()) as u64
+    ));
     g.bench_function(BenchmarkId::from_parameter("wbmp/159x33"), |b| {
-        b.iter(|| encode_wbmp(159, 33, criterion::black_box(&bits)).expect("encode"));
+        b.iter(|| encode(criterion::black_box(&img), &EncodeOptions::default()).expect("encode"));
     });
     g.finish();
 }
 
 fn bench_encode_1024x1024_padded(c: &mut Criterion) {
     let bits = build_packed_plane(1024, 1024, 0x5678_9abc);
+    let img = WbmpImage::from_bits(1024, 1024, bits).expect("image");
     let mut g = c.benchmark_group("encode_1024x1024_padded");
-    g.throughput(Throughput::Bytes(bits.len() as u64));
+    g.throughput(Throughput::Bytes(
+        img.as_bytes().map_or(0, |b| b.len()) as u64
+    ));
     g.sample_size(40);
     g.bench_function(BenchmarkId::from_parameter("wbmp/1024x1024"), |b| {
-        b.iter(|| encode_wbmp(1024, 1024, criterion::black_box(&bits)).expect("encode"));
+        b.iter(|| encode(criterion::black_box(&img), &EncodeOptions::default()).expect("encode"));
     });
     g.finish();
 }
@@ -127,8 +142,13 @@ fn bench_encode_threshold_320x240_gray8(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(gray.len() as u64));
     g.bench_function(BenchmarkId::from_parameter("threshold/320x240"), |b| {
         b.iter(|| {
-            encode_wbmp_from_threshold(320, 240, criterion::black_box(&gray), 128)
-                .expect("encode_from_threshold")
+            encode_gray8(
+                320,
+                240,
+                criterion::black_box(&gray),
+                &EncodeOptions::default(),
+            )
+            .expect("encode_from_threshold")
         });
     });
     g.finish();
@@ -140,8 +160,13 @@ fn bench_encode_dither_320x240_gray8(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(gray.len() as u64));
     g.bench_function(BenchmarkId::from_parameter("dither/320x240"), |b| {
         b.iter(|| {
-            encode_wbmp_from_dither(320, 240, criterion::black_box(&gray))
-                .expect("encode_from_dither")
+            encode_gray8(
+                320,
+                240,
+                criterion::black_box(&gray),
+                &EncodeOptions::default().with_dither(),
+            )
+            .expect("encode_from_dither")
         });
     });
     g.finish();

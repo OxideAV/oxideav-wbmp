@@ -1,4 +1,6 @@
-//! Decoder resource limits.
+//! Pre-contract decoder resource limits — superseded by
+//! [`crate::DecodeOptions`] (`IMAGE_CRATE_API`); kept as a deprecated
+//! shim for one release with a `From<WbmpLimits> for DecodeOptions`.
 //!
 //! WAP-237 doesn't normatively cap WBMP dimensions — the spec just says
 //! "the device's display capability." That's fine on a real-world WAP
@@ -37,6 +39,7 @@
 /// before the decoder touches its allocator. A real 1024 × 1024 image
 /// only weighs 128 KiB so this leaves several orders of magnitude of
 /// headroom for legitimate use.
+#[deprecated(note = "use oxideav_wbmp::DecodeOptions (IMAGE_CRATE_API)")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WbmpLimits {
     /// Maximum width in pixels (inclusive). 0 still illegal per
@@ -50,6 +53,7 @@ pub struct WbmpLimits {
     pub max_pixel_bytes: usize,
 }
 
+#[allow(deprecated)]
 impl Default for WbmpLimits {
     fn default() -> Self {
         Self {
@@ -60,6 +64,7 @@ impl Default for WbmpLimits {
     }
 }
 
+#[allow(deprecated)]
 impl WbmpLimits {
     /// Permissive limits suitable for trusted local input only —
     /// every dimension capped at `u32::MAX` and the pixel buffer
@@ -75,7 +80,22 @@ impl WbmpLimits {
     }
 }
 
+/// `max_width` / `max_height` / `max_pixel_bytes` become the
+/// corresponding `Some(..)` limits (`max_pixels` stays unlimited);
+/// `strict = false`, native polarity.
+#[allow(deprecated)]
+impl From<WbmpLimits> for crate::options::DecodeOptions {
+    fn from(l: WbmpLimits) -> Self {
+        Self::default()
+            .with_max_width(l.max_width)
+            .with_max_height(l.max_height)
+            .with_max_pixels(None)
+            .with_max_bytes(l.max_pixel_bytes as u64)
+    }
+}
+
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -101,5 +121,15 @@ mod tests {
         assert_eq!(lim.max_width, u32::MAX);
         assert_eq!(lim.max_height, u32::MAX);
         assert_eq!(lim.max_pixel_bytes, usize::MAX);
+    }
+
+    #[test]
+    fn converts_into_decode_options() {
+        let o = crate::options::DecodeOptions::from(WbmpLimits::default());
+        assert_eq!(o.max_width, Some(16_384));
+        assert_eq!(o.max_height, Some(16_384));
+        assert_eq!(o.max_pixels, None);
+        assert_eq!(o.max_bytes, Some(8 * 1024 * 1024));
+        assert!(!o.strict);
     }
 }

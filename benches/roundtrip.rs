@@ -17,7 +17,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-use oxideav_wbmp::{encode_wbmp, parse_wbmp, WbmpImage};
+use oxideav_wbmp::{decode, encode, EncodeOptions, WbmpImage};
 
 fn xorshift_byte(state: &mut u32) -> u8 {
     *state ^= *state << 13;
@@ -45,8 +45,9 @@ fn build_packed_plane(width: u32, height: u32, seed: u32) -> Vec<u8> {
 }
 
 fn run_roundtrip(width: u32, height: u32, bits: &[u8]) {
-    let encoded = encode_wbmp(width, height, bits).expect("encode");
-    let decoded = parse_wbmp(&encoded).expect("decode");
+    let img = WbmpImage::from_bits(width, height, bits.to_vec()).expect("image");
+    let encoded = encode(&img, &EncodeOptions::default()).expect("encode");
+    let decoded = decode(&encoded).expect("decode");
     // Ensure the optimiser keeps the decoded result around — using
     // `black_box` on the value rather than via `assert_eq!` keeps the
     // bench focused on the hot path without dragging in formatting

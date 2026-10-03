@@ -3,7 +3,7 @@
 //!
 //! When the `registry` feature is enabled, [`WbmpError`] gains a
 //! `From<WbmpError> for oxideav_core::Error` impl (defined in
-//! [`crate::registry`]) so the trait-side surface (`Decoder` /
+//! `crate::registry`) so the trait-side surface (`Decoder` /
 //! `Encoder`) can keep returning `oxideav_core::Result<T>` while the
 //! underlying parse/encode functions stay framework-free.
 
@@ -14,27 +14,36 @@ use core::fmt;
 /// `From<WbmpError> for oxideav_core::Error` impl.
 pub type Result<T> = core::result::Result<T, WbmpError>;
 
+/// The contract name for [`WbmpError`] (`IMAGE_CRATE_API`).
+pub type Error = WbmpError;
+
 /// Error variants returned by `oxideav-wbmp`'s standalone API.
 ///
 /// The variants mirror the subset of `oxideav_core::Error` the codec
-/// can hit. The crate intentionally avoids surfacing transport (`Io`)
-/// or framework-specific (`FormatNotFound`, `CodecNotFound`) errors —
-/// those originate in callers that are already linking `oxideav-core`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// can hit. `Io` only arises from caller-supplied streams
+/// ([`crate::decode_from`] / [`crate::encode_to`]); every in-memory
+/// path fails with one of the other three.
+#[derive(Debug)]
+#[non_exhaustive]
 pub enum WbmpError {
     /// The byte stream is malformed (truncated header, MBI overflows
     /// the 32-bit value range, declared image body shorter than what
-    /// `width * height` requires, …).
+    /// `width * height` requires, …), or a caller-assembled image has
+    /// inconsistent geometry.
     InvalidData(String),
     /// The byte stream uses a feature this codec doesn't implement —
     /// in practice, any non-zero Type field. WAP-237 only standardises
-    /// Type 0; no other type is widely deployed.
+    /// Type 0; no other type is widely deployed. Also raised for a
+    /// pixel layout the encoder cannot carry.
     Unsupported(String),
     /// The byte stream declares dimensions or a pixel-data size that
-    /// exceeds the caller-configured [`crate::WbmpLimits`]. Raised
+    /// exceeds the caller-configured [`crate::DecodeOptions`]. Raised
     /// before the decoder allocates the pixel buffer so the host stays
     /// safe even against a malicious 1 GB-bitmap header.
     LimitExceeded(String),
+    /// A read / write on a caller-supplied stream failed
+    /// ([`crate::decode_from`] / [`crate::encode_to`]).
+    Io(std::io::Error),
 }
 
 impl WbmpError {
@@ -54,14 +63,28 @@ impl WbmpError {
     }
 }
 
+impl From<std::io::Error> for WbmpError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
 impl fmt::Display for WbmpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidData(s) => write!(f, "invalid data: {s}"),
             Self::Unsupported(s) => write!(f, "unsupported: {s}"),
             Self::LimitExceeded(s) => write!(f, "limit exceeded: {s}"),
+            Self::Io(e) => write!(f, "io: {e}"),
         }
     }
 }
 
-impl std::error::Error for WbmpError {}
+impl std::error::Error for WbmpError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}

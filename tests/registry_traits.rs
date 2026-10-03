@@ -1,32 +1,29 @@
-//! Round-13 — end-to-end coverage of the framework trait surface
-//! (`Decoder` / `Encoder` / `Demuxer` / `Muxer` / probe / register)
-//! that the standalone-API integration tests in `roundtrip.rs` never
-//! reach.
+//! End-to-end coverage of the framework trait surface (`Decoder` /
+//! `Encoder` / `Demuxer` / `Muxer` / probe / register) that the
+//! standalone-API integration tests in `image_crate_api.rs` never
+//! reach. The registry path is a thin adapter over the contract
+//! functions, so every byte asserted here is cross-checked against
+//! `decode` / `encode`.
 //!
-//! Every previous round drove only the framework-free
-//! `parse_wbmp` / `encode_wbmp[_from_*]` entry points. The
-//! `#[cfg(feature = "registry")]` paths in `src/decoder.rs`,
-//! `src/encoder.rs`, `src/container.rs` and `src/registry.rs` were
-//! covered only by `cargo build`'s type-check — no test ever opened a
-//! `WbmpDecoder` and round-tripped a `Frame` through it, called
-//! `register_codecs` and inspected the resulting `CodecCapabilities`,
-//! or pushed a packet through `WbmpMuxer` → `WbmpDemuxer` via
-//! `ContainerRegistry::open_demuxer` / `open_muxer`. Round 13 plugs
-//! that gap.
+//! Polarity: the WBMP wire layout (WAP-237 §4.5.1, 1 = white) is the
+//! core `MonoBlack` format ("0 = black"); `MonoWhite` ("0 = white") is
+//! the inverse and is produced / accepted via an in-place flip with
+//! the padding bits re-zeroed.
 //!
 //! The tests are arranged as five small focused groups:
 //!
 //! 1. Codec-registry shape: `register_codecs` advertises the
-//!    `MonoWhite` / `MonoBlack` / `Gray8` formats the encoder accepts.
+//!    `MonoBlack` / `MonoWhite` / `Gray8` formats the encoder accepts;
+//!    `register(&mut RuntimeContext)` wires codec + container.
 //! 2. `Decoder` trait: `send_packet` → `receive_frame` round-trips the
-//!    on-disk plane in both `MonoWhite` (verbatim) and `MonoBlack`
+//!    on-disk plane in both `MonoBlack` (verbatim) and `MonoWhite`
 //!    (in-place inverted + padding-masked) modes, and the `NeedMore`
 //!    / `Eof` semantics match the spec text in `oxideav-core`.
 //! 3. `Encoder` trait: `send_frame` → `receive_packet` produces a
-//!    valid WBMP file for `MonoWhite`, `MonoBlack` (with padding
-//!    re-zeroed on disk) and `Gray8` (thresholded at 128). The
-//!    `NeedMore` / unsupported-format paths return the documented
-//!    errors.
+//!    valid WBMP file for `MonoBlack`, `MonoWhite` (with padding
+//!    re-zeroed on disk) and `Gray8` (thresholded at 128 by default,
+//!    `quantize` / `threshold` options honoured). The `NeedMore` /
+//!    unsupported-format paths return the documented errors.
 //! 4. Container probe + extension lookup: the `probe` function in
 //!    `container.rs` scores conformant Type-0 byte buffers at
 //!    `PROBE_SCORE_EXTENSION / 2` and grants the full
@@ -50,14 +47,24 @@ use oxideav_wbmp::container::probe;
 use oxideav_wbmp::decoder::make_decoder;
 use oxideav_wbmp::encoder::make_encoder;
 use oxideav_wbmp::{
-    encode_wbmp, parse_wbmp, register, register_codecs, register_containers, WbmpImage,
+    decode, encode, register, register_codecs, register_containers, register_registries,
+    EncodeOptions, WbmpImage,
 };
+
+/// Wire-polarity plane → complete file through the contract encoder.
+fn file_of(w: u32, h: u32, bits: &[u8]) -> Vec<u8> {
+    encode(
+        &WbmpImage::from_bits(w, h, bits.to_vec()).unwrap(),
+        &EncodeOptions::default(),
+    )
+    .unwrap()
+}
 
 // ---------------------------------------------------------------------------
 // Test fixtures.
 // ---------------------------------------------------------------------------
 
-/// Synthesise a 16×4 packed `MonoWhite` plane with a non-trivial
+/// Synthesise a 16×4 packed `MonoBlack` plane with a non-trivial
 /// pattern: every fourth row is all-white, the rest alternates 0xAA / 0x55.
 /// `stride = 2` so the test exercises a multi-byte row.
 fn make_packed_16x4() -> (u32, u32, Vec<u8>) {
@@ -103,8 +110,8 @@ fn codec_registry_advertises_wbmp_capabilities() {
     assert!(caps.intra_only, "WBMP files are single-frame intra-only");
     assert!(caps.lossless, "Type-0 WBMP is bit-exact lossless");
     for fmt in [
-        PixelFormat::MonoWhite,
         PixelFormat::MonoBlack,
+        PixelFormat::MonoWhite,
         PixelFormat::Gray8,
     ] {
         assert!(
@@ -121,7 +128,7 @@ fn combined_register_populates_both_registries() {
     // the container in one call.
     let mut codecs = CodecRegistry::new();
     let mut containers = ContainerRegistry::new();
-    register(&mut codecs, &mut containers);
+    register_registries(&mut codecs, &mut containers);
     assert!(!codecs.implementations(&CodecId::new("wbmp")).is_empty());
     assert_eq!(containers.container_for_extension("wbmp"), Some("wbmp"));
     assert_eq!(
@@ -129,6 +136,11 @@ fn combined_register_populates_both_registries() {
         Some("wbmp"),
         "extension lookup is case-insensitive"
     );
+    // The fleet-wide RuntimeContext form does the same.
+    let mut ctx = oxideav_core::RuntimeContext::new();
+    register(&mut ctx);
+    assert!(!ctx.codecs.implementations(&CodecId::new("wbmp")).is_empty());
+    assert_eq!(ctx.containers.container_for_extension("wbmp"), Some("wbmp"));
 }
 
 // ---------------------------------------------------------------------------
@@ -136,11 +148,11 @@ fn combined_register_populates_both_registries() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn decoder_trait_roundtrips_monowhite_verbatim() {
+fn decoder_trait_roundtrips_monoblack_verbatim() {
     let (w, h, bits) = make_packed_16x4();
-    let file = encode_wbmp(w, h, &bits).unwrap();
+    let file = file_of(w, h, &bits);
 
-    // No pixel_format requested → default to MonoWhite.
+    // No pixel_format requested → default to MonoBlack.
     let params = CodecParameters::video(CodecId::new("wbmp"));
     let mut dec = make_decoder(&params).unwrap();
     assert_eq!(dec.codec_id().as_str(), "wbmp");
@@ -172,9 +184,9 @@ fn decoder_trait_roundtrips_monowhite_verbatim() {
 }
 
 #[test]
-fn decoder_trait_honours_monoblack_polarity_request() {
+fn decoder_trait_honours_monowhite_polarity_request() {
     // Build an 11×1 input — stride 2, 5 padding bits — and decode it
-    // through the trait surface with MonoBlack requested. The plane
+    // through the trait surface with MonoWhite requested. The plane
     // must come out inverted and padding-masked.
     let mut file = Vec::new();
     {
@@ -185,10 +197,10 @@ fn decoder_trait_honours_monoblack_polarity_request() {
     file.push(0xE0);
 
     let mut params = CodecParameters::video(CodecId::new("wbmp"));
-    params.pixel_format = Some(PixelFormat::MonoBlack);
+    params.pixel_format = Some(PixelFormat::MonoWhite);
     let mut dec = make_decoder(&params).unwrap();
 
-    dec.send_packet(&Packet::new(0, TimeBase::new(1, 1), file))
+    dec.send_packet(&Packet::new(0, TimeBase::new(1, 1), file.clone()))
         .unwrap();
     let frame = dec.receive_frame().unwrap();
     let vf = match frame {
@@ -198,15 +210,22 @@ fn decoder_trait_honours_monoblack_polarity_request() {
     // Verbatim bytes were [0xAC, 0xE0]; inversion gives [0x53, 0x1F];
     // padding-mask clears the low 5 bits of the trailing byte → 0x00.
     assert_eq!(vf.planes[0].data, [0x53, 0x00]);
+    // The same picture as the contract path's MonoWhite request.
+    let via_api = oxideav_wbmp::decode_with(
+        &file,
+        &oxideav_wbmp::DecodeOptions::default().with_format(oxideav_wbmp::PixelFormat::MonoWhite),
+    )
+    .unwrap();
+    assert_eq!(via_api.as_bytes().unwrap(), &vf.planes[0].data[..]);
 }
 
 #[test]
-fn decoder_trait_unspecified_format_defaults_to_monowhite() {
+fn decoder_trait_unspecified_format_defaults_to_monoblack() {
     // `pixel_format = None` must keep the on-disk polarity. We feed a
     // single-byte all-white row and confirm the trait surface returns
     // 0xFF (not the inverted 0x00).
     let (w, h, bits) = (8u32, 1u32, vec![0xFFu8]);
-    let file = encode_wbmp(w, h, &bits).unwrap();
+    let file = file_of(w, h, &bits);
 
     let params = CodecParameters::video(CodecId::new("wbmp"));
     let mut dec = make_decoder(&params).unwrap();
@@ -250,11 +269,11 @@ fn make_video_frame(_width: u32, _height: u32, stride: usize, data: Vec<u8>) -> 
 }
 
 #[test]
-fn encoder_trait_monowhite_roundtrips_to_packet() {
+fn encoder_trait_monoblack_roundtrips_to_packet() {
     let (w, h, bits) = make_packed_16x4();
     let stride = WbmpImage::row_stride(w);
 
-    let mut enc = make_encoder(&params_for(w, h, PixelFormat::MonoWhite)).unwrap();
+    let mut enc = make_encoder(&params_for(w, h, PixelFormat::MonoBlack)).unwrap();
     assert_eq!(enc.codec_id().as_str(), "wbmp");
 
     // Empty receive before any frame: NeedMore.
@@ -268,7 +287,7 @@ fn encoder_trait_monowhite_roundtrips_to_packet() {
     assert_eq!(pkt.pts, Some(0));
 
     // The emitted bytes must decode to the original plane.
-    let img = parse_wbmp(&pkt.data).unwrap();
+    let img = decode(&pkt.data).unwrap();
     assert_eq!(img.width, w);
     assert_eq!(img.height, h);
     assert_eq!(img.planes[0].data, bits);
@@ -284,20 +303,20 @@ fn encoder_trait_monowhite_roundtrips_to_packet() {
 }
 
 #[test]
-fn encoder_trait_monoblack_inverts_and_masks_padding() {
-    // 11×1 MonoBlack input: feed an all-`1` plane (= all black on disk)
-    // and confirm the emitted file decodes back to the canonical all-
-    // black byte sequence with the padding bits zeroed.
+fn encoder_trait_monowhite_inverts_and_masks_padding() {
+    // 11×1 MonoWhite input: feed an all-`1` plane (= all black) and
+    // confirm the emitted file decodes back to the canonical all-black
+    // wire bytes with the padding bits zeroed.
     let width = 11u32;
     let height = 1u32;
     let stride = WbmpImage::row_stride(width);
-    // MonoBlack convention: bit `1` = black. Feed a full-white-on-disk
-    // input by setting only the 11 leading bits — the encoder must
-    // invert them to all-`0` on-disk (= all white) and mask the
-    // trailing padding bits in the inverted plane.
+    // MonoWhite convention: bit `1` = black. Feed 11 leading `1` bits
+    // (= all black) — the encoder must invert them to all-`0` on disk
+    // (= all black in the wire polarity) and mask the trailing padding
+    // bits in the inverted plane.
     let plane = vec![0xFFu8, 0xE0]; // 11 leading 1s + 5 padding zeros
 
-    let mut enc = make_encoder(&params_for(width, height, PixelFormat::MonoBlack)).unwrap();
+    let mut enc = make_encoder(&params_for(width, height, PixelFormat::MonoWhite)).unwrap();
     enc.send_frame(&Frame::Video(make_video_frame(
         width,
         height,
@@ -310,7 +329,7 @@ fn encoder_trait_monoblack_inverts_and_masks_padding() {
     // Decode verbatim — on-disk bytes must be the inverted-and-masked
     // sequence: !0xFF = 0x00, !0xE0 = 0x1F, then mask the 5 padding
     // bits of the last byte → 0x00.
-    let img = parse_wbmp(&pkt.data).unwrap();
+    let img = decode(&pkt.data).unwrap();
     assert_eq!(img.planes[0].data, [0x00, 0x00]);
 }
 
@@ -323,9 +342,47 @@ fn encoder_trait_gray8_thresholds_at_128() {
     enc.send_frame(&Frame::Video(make_video_frame(8, 1, 8, gray)))
         .unwrap();
     let pkt = enc.receive_packet().unwrap();
-    let img = parse_wbmp(&pkt.data).unwrap();
+    let img = decode(&pkt.data).unwrap();
     // Bits: 0,0,0,1,1,1,0,1 → 0b0001_1101 = 0x1D.
     assert_eq!(img.planes[0].data, [0x1D]);
+}
+
+#[test]
+fn encoder_trait_honours_quantize_options() {
+    let gray = vec![0u8, 100, 127, 128, 200, 255, 50, 130];
+    // threshold=100 → 0,1,1,1,1,1,0,1 = 0x7D.
+    let mut params = params_for(8, 1, PixelFormat::Gray8);
+    params.options.insert("threshold", "100");
+    let mut enc = make_encoder(&params).unwrap();
+    enc.send_frame(&Frame::Video(make_video_frame(8, 1, 8, gray.clone())))
+        .unwrap();
+    let pkt = enc.receive_packet().unwrap();
+    assert_eq!(decode(&pkt.data).unwrap().as_bytes().unwrap(), &[0x7D]);
+    // quantize=dither on saturated input agrees with threshold 128.
+    let sat: Vec<u8> = gray
+        .iter()
+        .map(|&g| if g >= 128 { 255 } else { 0 })
+        .collect();
+    let mut params = params_for(8, 1, PixelFormat::Gray8);
+    params.options.insert("quantize", "dither");
+    let mut enc = make_encoder(&params).unwrap();
+    enc.send_frame(&Frame::Video(make_video_frame(8, 1, 8, sat)))
+        .unwrap();
+    let pkt = enc.receive_packet().unwrap();
+    assert_eq!(decode(&pkt.data).unwrap().as_bytes().unwrap(), &[0x1D]);
+    // A padded Gray8 stride is repacked.
+    let mut padded = Vec::new();
+    padded.extend_from_slice(&gray);
+    padded.extend_from_slice(&[0xEE; 4]);
+    let mut enc = make_encoder(&params_for(8, 1, PixelFormat::Gray8)).unwrap();
+    enc.send_frame(&Frame::Video(make_video_frame(8, 1, 12, padded)))
+        .unwrap();
+    let pkt = enc.receive_packet().unwrap();
+    assert_eq!(decode(&pkt.data).unwrap().as_bytes().unwrap(), &[0x1D]);
+    // Unknown option keys are rejected at construction.
+    let mut params = params_for(8, 1, PixelFormat::Gray8);
+    params.options.insert("bogus", "1");
+    assert!(make_encoder(&params).is_err());
 }
 
 #[test]
@@ -491,7 +548,7 @@ fn container_registry_demuxer_emits_full_file_as_single_packet() {
     register_containers(&mut containers);
 
     let (w, h, bits) = make_packed_16x4();
-    let file_bytes = encode_wbmp(w, h, &bits).unwrap();
+    let file_bytes = file_of(w, h, &bits);
 
     let cur: Box<dyn ReadSeek> = Box::new(Cursor::new(file_bytes.clone()));
     let codecs = CodecRegistry::new(); // no resolver entries needed
@@ -505,7 +562,7 @@ fn container_registry_demuxer_emits_full_file_as_single_packet() {
     assert_eq!(streams[0].params.height, Some(h));
     assert_eq!(
         streams[0].params.pixel_format,
-        Some(PixelFormat::MonoWhite),
+        Some(PixelFormat::MonoBlack),
         "demuxer must advertise the on-disk polarity"
     );
 
@@ -546,13 +603,13 @@ fn container_registry_muxer_writes_packet_through_unchanged() {
     register_containers(&mut containers);
 
     let (w, h, bits) = make_packed_16x4();
-    let file_bytes = encode_wbmp(w, h, &bits).unwrap();
+    let file_bytes = file_of(w, h, &bits);
 
     // Build a stream description matching the encoder's output.
     let mut params = CodecParameters::video(CodecId::new("wbmp"));
     params.width = Some(w);
     params.height = Some(h);
-    params.pixel_format = Some(PixelFormat::MonoWhite);
+    params.pixel_format = Some(PixelFormat::MonoBlack);
     let stream = StreamInfo {
         index: 0,
         params,
@@ -580,7 +637,7 @@ fn container_registry_muxer_writes_packet_through_unchanged() {
     let codecs = CodecRegistry::new();
     let mut dmx = containers.open_demuxer("wbmp", cur, &codecs).unwrap();
     let recovered = dmx.next_packet().unwrap();
-    let img = parse_wbmp(&recovered.data).unwrap();
+    let img = decode(&recovered.data).unwrap();
     assert_eq!(img.planes[0].data, bits);
 }
 
@@ -613,7 +670,7 @@ fn container_registry_muxer_rejects_multi_stream_input() {
     let mut params = CodecParameters::video(CodecId::new("wbmp"));
     params.width = Some(8);
     params.height = Some(1);
-    params.pixel_format = Some(PixelFormat::MonoWhite);
+    params.pixel_format = Some(PixelFormat::MonoBlack);
     let stream = StreamInfo {
         index: 0,
         params: params.clone(),

@@ -15,7 +15,7 @@
 //! `roundtrip`.
 //!
 //! Each scenario is self-contained: the bench encodes a fresh WBMP on
-//! the fly with the public encoder API and then iterates `parse_wbmp`
+//! the fly with the public encoder API and then iterates `decode`
 //! on the encoded bytes. No fixture files are committed.
 //!
 //!   - **decode_8x8_solid**: 8×8 single-byte-per-row fixture — the
@@ -29,7 +29,7 @@
 //!     branch in the header parser.
 //!   - **decode_1024x1024_padded**: 1024×1024 fixture — covers a
 //!     "modern wallpaper" sized WBMP that still fits inside the default
-//!     `WbmpLimits` (128 KiB body, well under the 8 MiB cap).
+//!     `DecodeOptions` (128 KiB body, well under the 1 GiB cap).
 //!   - **decode_159x33_odd_width**: width 159 → 1 padding bit per row;
 //!     stresses the per-row padding-bit handling against the rest of
 //!     the row-major copy.
@@ -43,7 +43,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-use oxideav_wbmp::{encode_wbmp, parse_wbmp, parse_wbmp_with_limits, WbmpImage, WbmpLimits};
+use oxideav_wbmp::{decode, encode, EncodeOptions, WbmpImage};
 
 /// Cheap deterministic xorshift32 — synthesises pseudo-random bits so
 /// the inputs aren't trivially compressible / branch-predictable. WBMP
@@ -80,7 +80,11 @@ fn build_packed_plane(width: u32, height: u32, seed: u32) -> Vec<u8> {
 
 fn encode_fixture(width: u32, height: u32, seed: u32) -> Vec<u8> {
     let bits = build_packed_plane(width, height, seed);
-    encode_wbmp(width, height, &bits).expect("encode_wbmp")
+    encode(
+        &WbmpImage::from_bits(width, height, bits).expect("image"),
+        &EncodeOptions::default(),
+    )
+    .expect("encode")
 }
 
 fn bench_decode_8x8_solid(c: &mut Criterion) {
@@ -89,7 +93,7 @@ fn bench_decode_8x8_solid(c: &mut Criterion) {
     let mut g = c.benchmark_group("decode_8x8_solid");
     g.throughput(Throughput::Bytes(bytes.len() as u64));
     g.bench_function(BenchmarkId::from_parameter("wbmp/8x8"), |b| {
-        b.iter(|| parse_wbmp(criterion::black_box(&bytes)).expect("decode"));
+        b.iter(|| decode(criterion::black_box(&bytes)).expect("decode"));
     });
     g.finish();
 }
@@ -101,7 +105,7 @@ fn bench_decode_96x64_typical(c: &mut Criterion) {
     let mut g = c.benchmark_group("decode_96x64_typical");
     g.throughput(Throughput::Bytes(bytes.len() as u64));
     g.bench_function(BenchmarkId::from_parameter("wbmp/96x64"), |b| {
-        b.iter(|| parse_wbmp(criterion::black_box(&bytes)).expect("decode"));
+        b.iter(|| decode(criterion::black_box(&bytes)).expect("decode"));
     });
     g.finish();
 }
@@ -113,7 +117,7 @@ fn bench_decode_320x240_qvga(c: &mut Criterion) {
     let mut g = c.benchmark_group("decode_320x240_qvga");
     g.throughput(Throughput::Bytes(bytes.len() as u64));
     g.bench_function(BenchmarkId::from_parameter("wbmp/320x240"), |b| {
-        b.iter(|| parse_wbmp(criterion::black_box(&bytes)).expect("decode"));
+        b.iter(|| decode(criterion::black_box(&bytes)).expect("decode"));
     });
     g.finish();
 }
@@ -125,7 +129,7 @@ fn bench_decode_159x33_odd_width(c: &mut Criterion) {
     let mut g = c.benchmark_group("decode_159x33_odd_width");
     g.throughput(Throughput::Bytes(bytes.len() as u64));
     g.bench_function(BenchmarkId::from_parameter("wbmp/159x33"), |b| {
-        b.iter(|| parse_wbmp(criterion::black_box(&bytes)).expect("decode"));
+        b.iter(|| decode(criterion::black_box(&bytes)).expect("decode"));
     });
     g.finish();
 }
@@ -138,7 +142,7 @@ fn bench_decode_1024x1024_padded(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(bytes.len() as u64));
     g.sample_size(40);
     g.bench_function(BenchmarkId::from_parameter("wbmp/1024x1024"), |b| {
-        b.iter(|| parse_wbmp(criterion::black_box(&bytes)).expect("decode"));
+        b.iter(|| decode(criterion::black_box(&bytes)).expect("decode"));
     });
     g.finish();
 }
@@ -152,22 +156,9 @@ fn bench_decode_2048x2048_pixel_cap(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(bytes.len() as u64));
     g.sample_size(20);
     g.bench_function(BenchmarkId::from_parameter("wbmp/2048x2048"), |b| {
-        b.iter(|| parse_wbmp(criterion::black_box(&bytes)).expect("decode"));
+        b.iter(|| decode(criterion::black_box(&bytes)).expect("decode"));
     });
     g.finish();
-}
-
-// Acknowledge `WbmpLimits` / `parse_wbmp_with_limits` as part of the
-// public surface (used by the encode + roundtrip benches; pulled here
-// so the import block stays uniform across the three files).
-#[allow(dead_code)]
-fn _unused_limits_marker() -> WbmpLimits {
-    let lim = WbmpLimits::unbounded();
-    // Force `parse_wbmp_with_limits` to stay used at the crate-bench
-    // link level even though the decode bench only exercises the default
-    // `parse_wbmp` entry point.
-    let _ = parse_wbmp_with_limits(&[], &lim);
-    lim
 }
 
 criterion_group!(

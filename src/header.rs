@@ -28,7 +28,26 @@ use crate::error::{Result, WbmpError};
 use crate::ext::{parse_ext_fields, parse_ext_fields_strict, ExtFields, FixHeaderField};
 use crate::mbi::{read_mbi_u32, read_mbi_u32_strict, write_mbi_u32};
 
+/// Everything the header parsers learn before the pixel data: the
+/// crate-internal record behind [`crate::info`] and the decoders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedHeader {
+    /// Width in pixels (≥ 1).
+    pub width: u32,
+    /// Height in pixels (≥ 1).
+    pub height: u32,
+    /// Byte offset of the first main-image octet.
+    pub data_offset: usize,
+    /// The raw `FixHeaderField` octet.
+    pub fix_header: u8,
+    /// The parsed `ExtFields` region (lenient general-form parse
+    /// only; `None` when the presence flag is clear or the opaque
+    /// Type-0 parser was used).
+    pub ext_fields: Option<ExtFields>,
+}
+
 /// Decoded WBMP header — Type 0 only.
+#[deprecated(note = "use oxideav_wbmp::info -> ImageInfo (IMAGE_CRATE_API)")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
     /// Width in pixels.
@@ -55,6 +74,7 @@ pub struct Header {
 /// decoder can still correctly locate `Width`/`Height` (and surface the
 /// parameters) when a producer emits a non-conformant Type-0 file
 /// carrying extension headers.
+#[deprecated(note = "use oxideav_wbmp::info -> ImageInfo (IMAGE_CRATE_API)")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeaderExt {
     /// Width in pixels.
@@ -71,6 +91,7 @@ pub struct HeaderExt {
     pub ext_fields: Option<ExtFields>,
 }
 
+#[allow(deprecated)]
 impl HeaderExt {
     /// Narrow to the plain four-field [`Header`] view, discarding the
     /// extension-header detail.
@@ -95,8 +116,10 @@ impl HeaderExt {
 /// Errors:
 /// * [`WbmpError::Unsupported`] if the Type field is non-zero.
 /// * [`WbmpError::InvalidData`] for truncated or oversized MBIs.
+#[deprecated(note = "use oxideav_wbmp::info (IMAGE_CRATE_API)")]
+#[allow(deprecated)]
 pub fn parse_header(bytes: &[u8]) -> Result<Header> {
-    parse_header_inner(bytes, false)
+    parse_header_inner(bytes, false).map(|h| h.narrow())
 }
 
 /// Strict variant of [`parse_header`]. Identical except the
@@ -109,8 +132,12 @@ pub fn parse_header(bytes: &[u8]) -> Result<Header> {
 /// silently accept a byte the spec does not currently assign meaning
 /// to. The lax [`parse_header`] is forward-compatible with
 /// hypothetical Type-0 extensions; this one is not.
+#[deprecated(
+    note = "use oxideav_wbmp::decode_with(.., &DecodeOptions::new().with_strict(true)) (IMAGE_CRATE_API)"
+)]
+#[allow(deprecated)]
 pub fn parse_header_strict(bytes: &[u8]) -> Result<Header> {
-    parse_header_inner(bytes, true)
+    parse_header_inner(bytes, true).map(|h| h.narrow())
 }
 
 /// Parse the header **including** any extension headers (`ExtFields`,
@@ -133,8 +160,10 @@ pub fn parse_header_strict(bytes: &[u8]) -> Result<Header> {
 /// * [`WbmpError::Unsupported`] if the Type field is non-zero.
 /// * [`WbmpError::InvalidData`] for truncated/oversized MBIs, a
 ///   truncated or over-long ExtFields region, or a zero dimension.
+#[deprecated(note = "use oxideav_wbmp::info -> ImageInfo::ext_fields (IMAGE_CRATE_API)")]
+#[allow(deprecated)]
 pub fn parse_header_ext(bytes: &[u8]) -> Result<HeaderExt> {
-    parse_header_ext_inner(bytes, false)
+    parse_header_ext_inner(bytes, false).map(|h| h.widen())
 }
 
 /// Strict variant of [`parse_header_ext`] — a fully-conformant
@@ -165,11 +194,40 @@ pub fn parse_header_ext(bytes: &[u8]) -> Result<HeaderExt> {
 /// * [`WbmpError::InvalidData`] for a non-minimal MBI, a truncated /
 ///   oversized MBI, a truncated or over-long ExtFields region, an
 ///   out-of-class Type-11 parameter byte, or a zero dimension.
+#[deprecated(note = "use oxideav_wbmp::info -> ImageInfo::ext_fields (IMAGE_CRATE_API)")]
+#[allow(deprecated)]
 pub fn parse_header_ext_strict(bytes: &[u8]) -> Result<HeaderExt> {
-    parse_header_ext_inner(bytes, true)
+    parse_header_ext_inner(bytes, true).map(|h| h.widen())
 }
 
-fn parse_header_ext_inner(bytes: &[u8], strict: bool) -> Result<HeaderExt> {
+#[allow(deprecated)]
+impl ParsedHeader {
+    /// The pre-contract four-field view.
+    fn narrow(&self) -> Header {
+        Header {
+            width: self.width,
+            height: self.height,
+            data_offset: self.data_offset,
+        }
+    }
+
+    /// The pre-contract extension-aware view.
+    fn widen(self) -> HeaderExt {
+        HeaderExt {
+            width: self.width,
+            height: self.height,
+            data_offset: self.data_offset,
+            fix_header: FixHeaderField::from_byte(self.fix_header),
+            ext_fields: self.ext_fields,
+        }
+    }
+}
+
+/// General-form header parse (§4.4.1): honours the `FixHeaderField`
+/// presence bit and skips / surfaces the `ExtFields` region. `strict`
+/// adds the §4.3.1 shortest-MBI rule and the §4.4.3 character classes
+/// (but still accepts extension headers).
+pub(crate) fn parse_header_ext_inner(bytes: &[u8], strict: bool) -> Result<ParsedHeader> {
     let mut offset = 0usize;
 
     let read = if strict {
@@ -212,16 +270,19 @@ fn parse_header_ext_inner(bytes: &[u8], strict: bool) -> Result<HeaderExt> {
         )));
     }
 
-    Ok(HeaderExt {
+    Ok(ParsedHeader {
         width,
         height,
         data_offset: offset,
-        fix_header,
+        fix_header: fix_header.raw,
         ext_fields,
     })
 }
 
-fn parse_header_inner(bytes: &[u8], strict: bool) -> Result<Header> {
+/// Opaque-`FixHeaderField` Type-0 header parse: the octet after `Type`
+/// is skipped (lax) or required to be `0x00` (strict, which also
+/// enforces the §4.3.1 shortest-MBI rule). Never reads `ExtFields`.
+pub(crate) fn parse_header_inner(bytes: &[u8], strict: bool) -> Result<ParsedHeader> {
     let mut offset = 0usize;
 
     // In strict mode every MBI must obey the §4.3.1 shortest-encoding
@@ -265,15 +326,18 @@ fn parse_header_inner(bytes: &[u8], strict: bool) -> Result<Header> {
         )));
     }
 
-    Ok(Header {
+    Ok(ParsedHeader {
         width,
         height,
         data_offset: offset,
+        fix_header: fixed_header,
+        ext_fields: None,
     })
 }
 
 /// Append a Type-0 header (Type=0, FixedHeader=0, Width, Height) to
 /// `out`. Pixel data must be appended by the caller right after.
+#[doc(hidden)]
 pub fn write_header(width: u32, height: u32, out: &mut Vec<u8>) {
     write_mbi_u32(0, out); // Type = 0 (B/W bitmap)
     out.push(0x00); // FixedHeader (Type 0: always 0)
@@ -304,6 +368,7 @@ pub fn write_header(width: u32, height: u32, out: &mut Vec<u8>) {
 /// Errors with [`WbmpError::InvalidData`] if `width`/`height` is zero or
 /// the `ExtFields` region is not writer-representable (see
 /// [`crate::ext::write_ext_fields`]).
+#[doc(hidden)]
 pub fn write_header_ext(
     width: u32,
     height: u32,
@@ -343,6 +408,7 @@ pub fn write_header_ext(
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)]
     // A few test literals are field-aligned to the §4.4.2 / §4.4.3
     // bitfield boundaries (FixHeaderField presence|type|reserved, or a
     // ParameterHeader concat|ident-size|value-size) rather than uniform

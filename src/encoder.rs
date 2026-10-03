@@ -1,443 +1,158 @@
 //! WBMP Type-0 encoder.
 //!
-//! Three standalone entry points:
+//! The contract entry points live at the crate root ([`crate::encode`],
+//! [`crate::encode_rgb8`], [`crate::encode_rgba8`],
+//! [`crate::encode_gray8`], [`crate::encode_to`]) and call the
+//! crate-internal `encode_image` here; [`encode_frames`] is the
+//! animated-stream depth API (WAP-237 §4.2 / §4.5.1). The pre-contract
+//! `encode_wbmp*` family remains as `#[deprecated]` wrappers for one
+//! release. With the default `registry` feature on, the gated
+//! `WbmpEncoder` trait impl wraps the same functions for the
+//! `oxideav_core::Encoder` surface.
 //!
-//! * [`encode_wbmp`] — accept an already-packed mono plane (1 bit per
-//!   pixel, MSB-first, 1 = white, rows padded to a byte boundary) and
-//!   wrap it with a Type-0 header. Cheap: just a header prefix + the
-//!   pixel bytes themselves.
-//! * [`encode_wbmp_from_threshold`] — convenience wrapper that takes
-//!   a tightly-packed 8-bit grayscale buffer (one byte per pixel, no
-//!   row padding) and a brightness threshold, then produces the
-//!   1-bit-per-pixel plane and a complete WBMP file in one call.
-//! * [`encode_wbmp_from_dither`] — alternative wrapper that runs a
-//!   Floyd–Steinberg error-diffusion quantiser over the same 8-bit
-//!   grayscale input before packing. Useful for photographic source
-//!   material where a hard threshold collapses every mid-tone to a
-//!   flat region. Reference: R. W. Floyd and L. Steinberg, "An
-//!   adaptive algorithm for spatial greyscale", Proc. SID
-//!   17/2 (1976), pp. 75–77.
-//!
-//! All three functions emit the same wire layout for the same
-//! resulting bit plane, so
-//! `parse_wbmp(encode_wbmp(w, h, bits)).unwrap()` round-trips bit
-//! exactly.
+//! WBMP Type 0 is uncompressed: every writer here is a header prefix
+//! (`Type`, `FixHeaderField`, optional `ExtFields`, `Width`, `Height`)
+//! followed by the packed planes verbatim, so
+//! `decode(encode(img)) == img` holds bit-exactly.
 
 use crate::decoder::MAX_ANIMATED_IMAGES;
 use crate::error::{Result, WbmpError};
-use crate::header::write_header;
-#[cfg(feature = "registry")]
-use crate::image::PlaneLayout;
-use crate::image::WbmpImage;
+use crate::ext::ExtFields;
+use crate::header::{write_header, write_header_ext};
+use crate::image::{PlaneLayout, WbmpImage};
+use crate::options::{EncodeOptions, Quantize};
 
 #[cfg(feature = "registry")]
 use oxideav_core::Encoder;
 #[cfg(feature = "registry")]
 use oxideav_core::{CodecId, CodecParameters, Frame, Packet, PixelFormat, TimeBase};
 
-/// Encode a WBMP Type-0 file from an already-packed monochrome bit
-/// plane.
-///
-/// `mono_bits` must be exactly `ceil(width / 8) * height` bytes long,
-/// with bits packed MSB-first within each byte; bit `1` is white,
-/// bit `0` is black, and trailing bits in the last byte of every row
-/// are ignored (they should be zero by convention).
-pub fn encode_wbmp(width: u32, height: u32, mono_bits: &[u8]) -> Result<Vec<u8>> {
-    if width == 0 || height == 0 {
-        return Err(WbmpError::invalid(format!(
-            "encode_wbmp: zero dimension (width={width}, height={height})"
-        )));
-    }
-    let layout = crate::image::PlaneLayout::new(width, height)
-        .map_err(|msg| WbmpError::invalid(format!("encode_wbmp: {msg}")))?;
-    if mono_bits.len() != layout.total_bytes {
-        return Err(WbmpError::invalid(format!(
-            "encode_wbmp: mono_bits length {} != stride*height {}",
-            mono_bits.len(),
-            layout.total_bytes,
-        )));
-    }
+// ---------------------------------------------------------------------------
+// Crate-internal implementation.
+// ---------------------------------------------------------------------------
 
-    // Header is at most 1 + 1 + 5 + 5 = 12 bytes (worst case) — pre-
-    // allocate accordingly so the body push doesn't reallocate.
-    let mut out = Vec::with_capacity(12 + layout.total_bytes);
-    write_header(width, height, &mut out);
-    out.extend_from_slice(mono_bits);
-    Ok(out)
-}
-
-/// Encode a **general-form** WBMP file (§4.4.1
-/// `TypeField FixHeaderField [ExtFields] Width Height` + pixel data) from
-/// an already-packed monochrome bit plane and an optional [`ExtFields`](crate::ext::ExtFields)
-/// region — the inverse of [`crate::parse_wbmp_ext`].
-///
-/// `mono_bits` has the same shape [`encode_wbmp`] requires: exactly
-/// `ceil(width / 8) * height` bytes, MSB-first, bit `1` = white.
-///
-/// * `ext_fields == None` writes a conformant Type-0 header
-///   (`FixHeaderField == 0x00`, no ExtFields), so the output is
-///   byte-for-byte identical to [`encode_wbmp`] and round-trips through
-///   [`parse_wbmp`](crate::parse_wbmp) as well as
-///   [`parse_wbmp_ext`](crate::parse_wbmp_ext).
-/// * `ext_fields == Some(_)` synthesises a `FixHeaderField` with the
-///   presence flag set and bits 6-5 selecting the variant type, then
-///   serialises the region before the dimensions. WBMP **Type 0**
-///   conformantly forbids extension headers (§4.5.1), so this produces a
-///   deliberately non-conformant stream — useful for interop testing
-///   against a producer that emitted them and for exercising the
-///   `parse_wbmp_ext` decode path. The result round-trips through
-///   [`parse_wbmp_ext`](crate::parse_wbmp_ext) (recovering both the image
-///   and the `ExtFields`), though **not** through the plain
-///   [`parse_wbmp`](crate::parse_wbmp) (which would mis-read the first
-///   ExtField octet as the width MBI).
-///
-/// When `strict` is set, a Type-11 region's parameter character classes
-/// are validated before emitting (per the §4.4.3 ABNF); see
-/// [`crate::ext::write_ext_fields_strict`].
-///
-/// Errors with [`WbmpError::InvalidData`] for a zero dimension, a
-/// `mono_bits` length mismatch, or an `ExtFields` region that is not
-/// writer-representable.
-pub fn encode_wbmp_ext(
+/// Serialise a complete file: header per `opts` (conformant Type-0, or
+/// the general form when `opts.ext_fields` is set) followed by every
+/// plane in `planes`, each exactly `ceil(width / 8) × height` bytes of
+/// wire-polarity bits. `planes` is non-empty and at most `1 +
+/// MAX_ANIMATED_IMAGES` long; dimensions are non-zero.
+fn write_file<'a>(
     width: u32,
     height: u32,
-    mono_bits: &[u8],
-    ext_fields: Option<&crate::ext::ExtFields>,
-    strict: bool,
+    planes: impl ExactSizeIterator<Item = &'a [u8]>,
+    opts: &EncodeOptions,
 ) -> Result<Vec<u8>> {
     if width == 0 || height == 0 {
         return Err(WbmpError::invalid(format!(
-            "encode_wbmp_ext: zero dimension (width={width}, height={height})"
+            "WBMP: zero dimension (width={width}, height={height})"
         )));
     }
-    let layout = crate::image::PlaneLayout::new(width, height)
-        .map_err(|msg| WbmpError::invalid(format!("encode_wbmp_ext: {msg}")))?;
-    if mono_bits.len() != layout.total_bytes {
-        return Err(WbmpError::invalid(format!(
-            "encode_wbmp_ext: mono_bits length {} != stride*height {}",
-            mono_bits.len(),
-            layout.total_bytes,
-        )));
-    }
-
-    let mut out = Vec::with_capacity(12 + layout.total_bytes);
-    crate::header::write_header_ext(width, height, ext_fields, strict, &mut out)?;
-    out.extend_from_slice(mono_bits);
-    Ok(out)
-}
-
-/// Encode an animated WBMP Type-0 file: a main image followed by 0..15
-/// animated sub-images, all sharing the single header `width`/`height`.
-///
-/// WAP-237 §4.2 defines `Image-data = Main-image 0*15Animated-image`,
-/// where every `Animated-image` is a "Bitmap formed according to image
-/// data structure specified by the TypeField". For Type 0 that is an
-/// identically-dimensioned packed 1-bit-per-pixel plane carried with
-/// **no per-frame header** — so the wire form is one four-field header
-/// followed by every frame's `stride * height` bytes back-to-back. This
-/// is the exact inverse of [`crate::parse_wbmp_frames`].
-///
-/// `frames` must be non-empty: `frames[0]` is the main image and
-/// `frames[1..]` are the animated sub-images in presentation order.
-/// Every element must be exactly `ceil(width / 8) * height` bytes long
-/// (MSB-first packing, 1 = white, trailing row bits zero-padded), the
-/// same plane shape [`encode_wbmp`] accepts. §4.5.1 caps the stream at
-/// 15 animated images, so at most `1 + MAX_ANIMATED_IMAGES == 16`
-/// frames are accepted; more raises [`WbmpError::InvalidData`].
-///
-/// On a single-element `frames` the output is byte-for-byte identical to
-/// [`encode_wbmp`] with the same plane, so a non-animated caller can use
-/// either entry point interchangeably.
-pub fn encode_wbmp_frames(width: u32, height: u32, frames: &[&[u8]]) -> Result<Vec<u8>> {
-    if width == 0 || height == 0 {
-        return Err(WbmpError::invalid(format!(
-            "encode_wbmp_frames: zero dimension (width={width}, height={height})"
-        )));
-    }
-    if frames.is_empty() {
+    let count = planes.len();
+    if count == 0 {
         return Err(WbmpError::invalid(
-            "encode_wbmp_frames: at least the main image frame is required",
+            "WBMP: at least the main image frame is required",
         ));
     }
-    // §4.5.1: at most 15 animated sub-images follow the main image, so
-    // the total frame count must not exceed 1 + MAX_ANIMATED_IMAGES.
-    if frames.len() > 1 + MAX_ANIMATED_IMAGES {
+    // §4.5.1: at most 15 animated sub-images follow the main image.
+    if count > 1 + MAX_ANIMATED_IMAGES {
         return Err(WbmpError::invalid(format!(
-            "encode_wbmp_frames: {} frames exceeds the §4.5.1 maximum of {} \
+            "WBMP: {count} frames exceeds the §4.5.1 maximum of {} \
              (main image + {MAX_ANIMATED_IMAGES} animated sub-images)",
-            frames.len(),
             1 + MAX_ANIMATED_IMAGES,
         )));
     }
+    let layout = PlaneLayout::new(width, height)
+        .map_err(|msg| WbmpError::unsupported(format!("WBMP: {msg}")))?;
 
-    let layout = crate::image::PlaneLayout::new(width, height)
-        .map_err(|msg| WbmpError::invalid(format!("encode_wbmp_frames: {msg}")))?;
-
-    // Every frame shares the header dimensions, so each must be exactly
-    // one packed plane. Validate up front before allocating the output.
-    for (i, frame) in frames.iter().enumerate() {
-        if frame.len() != layout.total_bytes {
+    // Header is at most 1 + 1 + 5 + 5 = 12 bytes without extension
+    // headers; the ExtFields region is bounded by MAX_EXT_FIELD_BYTES.
+    let body_bytes = layout.total_bytes.saturating_mul(count);
+    let mut out = Vec::with_capacity(12 + body_bytes);
+    match &opts.ext_fields {
+        None => write_header(width, height, &mut out),
+        Some(ext) => write_header_ext(width, height, Some(ext), opts.strict, &mut out)?,
+    }
+    for (i, plane) in planes.enumerate() {
+        if plane.len() != layout.total_bytes {
             return Err(WbmpError::invalid(format!(
-                "encode_wbmp_frames: frame {i} length {} != stride*height {}",
-                frame.len(),
+                "WBMP: frame {i} plane length {} != stride*height {}",
+                plane.len(),
                 layout.total_bytes,
             )));
         }
-    }
-
-    // Header (≤ 12 bytes worst case) + every frame's packed plane.
-    let body_bytes = layout.total_bytes.saturating_mul(frames.len());
-    let mut out = Vec::with_capacity(12 + body_bytes);
-    write_header(width, height, &mut out);
-    for frame in frames {
-        out.extend_from_slice(frame);
+        out.extend_from_slice(plane);
     }
     Ok(out)
 }
 
-/// Convenience helper: threshold an 8-bit grayscale buffer (one byte
-/// per pixel, row-major, no padding) into a 1-bit plane and wrap it
-/// in a WBMP Type-0 file.
-///
-/// Pixels with grayscale value `>= threshold` become white (bit 1),
-/// pixels below become black (bit 0). Choose `threshold = 128` for
-/// the standard mid-grey cutoff, `threshold = 1` to drop only true
-/// black, etc.
-///
-/// `gray.len()` must equal `width * height`.
-pub fn encode_wbmp_from_threshold(
-    width: u32,
-    height: u32,
-    gray: &[u8],
-    threshold: u8,
-) -> Result<Vec<u8>> {
-    if width == 0 || height == 0 {
-        return Err(WbmpError::invalid(format!(
-            "encode_wbmp_from_threshold: zero dimension (width={width}, height={height})"
-        )));
-    }
-    let pixel_count = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or_else(|| {
-            WbmpError::invalid("encode_wbmp_from_threshold: width × height overflows usize")
-        })?;
-    if gray.len() != pixel_count {
-        return Err(WbmpError::invalid(format!(
-            "encode_wbmp_from_threshold: gray length {} != width*height {pixel_count}",
-            gray.len()
-        )));
-    }
-
-    let stride = WbmpImage::row_stride(width);
-    let mut bits = vec![0u8; stride * height as usize];
-    let w = width as usize;
-    let full_bytes = w / 8;
-    let tail_bits = w % 8;
-
-    for y in 0..height as usize {
-        let row_in = &gray[y * w..(y + 1) * w];
-        let row_out = &mut bits[y * stride..(y + 1) * stride];
-
-        // Pack eight samples per output byte without a branch on the
-        // hot loop body. `>= threshold` becomes a single comparison
-        // per sample, and the eight bit positions OR together into
-        // one byte with no in-place read-modify-write. The compiler
-        // unrolls this cleanly on every backend we ship.
-        for (out_byte, in_chunk) in row_out
-            .iter_mut()
-            .zip(row_in.chunks_exact(8))
-            .take(full_bytes)
-        {
-            *out_byte = ((in_chunk[0] >= threshold) as u8) << 7
-                | ((in_chunk[1] >= threshold) as u8) << 6
-                | ((in_chunk[2] >= threshold) as u8) << 5
-                | ((in_chunk[3] >= threshold) as u8) << 4
-                | ((in_chunk[4] >= threshold) as u8) << 3
-                | ((in_chunk[5] >= threshold) as u8) << 2
-                | ((in_chunk[6] >= threshold) as u8) << 1
-                | ((in_chunk[7] >= threshold) as u8);
-        }
-
-        // Final partial byte (`width % 8 != 0`): pack the remaining
-        // 1..=7 samples MSB-first into the last byte of the row,
-        // leaving the unused low bits at zero (the WBMP convention).
-        if tail_bits != 0 {
-            let base = full_bytes * 8;
-            let mut b: u8 = 0;
-            for k in 0..tail_bits {
-                if row_in[base + k] >= threshold {
-                    b |= 1 << (7 - k);
-                }
-            }
-            row_out[full_bytes] = b;
-        }
-    }
-
-    encode_wbmp(width, height, &bits)
+/// Encode one image: its plane is brought to the wire polarity /
+/// packing ([`WbmpImage::wire_bits`]) and written after the header.
+/// `color` and `metadata` cannot be carried and are ignored.
+pub(crate) fn encode_image(image: &WbmpImage, opts: &EncodeOptions) -> Result<Vec<u8>> {
+    // `WbmpImage::new` validated the geometry, so `wire_bits` is total.
+    let bits = image.wire_bits();
+    write_file(
+        image.width,
+        image.height,
+        std::iter::once(bits.as_ref()),
+        opts,
+    )
 }
 
-/// Floyd–Steinberg error-diffusion quantiser → WBMP Type-0 file.
+/// Encode an animated WBMP stream: `frames[0]` is the main image,
+/// `frames[1..]` (at most [`MAX_ANIMATED_IMAGES`]) the animated
+/// sub-images in presentation order, all sharing the main image's
+/// dimensions (WAP-237 §4.2: `Image-data = Main-image
+/// 0*15Animated-image`, one header, no per-frame header or timing).
 ///
-/// Walks the 8-bit grayscale input left-to-right, top-to-bottom. At
-/// each pixel the running luminance value is compared against 128:
-/// values `>= 128` emit a white bit (1) and clamp the quantised
-/// output to 255; values below emit a black bit (0) with output 0.
-/// The signed error `actual - quantised` (range −128..=127) is then
-/// diffused to the four forward neighbours in the classic
-/// 7/16, 3/16, 5/16, 1/16 distribution:
-///
-/// ```text
-///                   X    7/16
-///         3/16   5/16   1/16
-/// ```
-///
-/// The accumulator uses i16 so the propagated error never wraps; the
-/// outgoing pixel is clamped back into 0..=255 before the next
-/// pixel's threshold. This produces a stippled rendering that
-/// preserves local average luminance — markedly better than a hard
-/// threshold for photographic material at the cost of one extra
-/// scratch row of i16 storage.
-///
-/// `gray.len()` must equal `width * height`. Inputs are consumed by
-/// value-copy into the scratch buffer; the caller's buffer is not
-/// mutated.
-///
-/// Reference: R. W. Floyd and L. Steinberg, "An adaptive algorithm
-/// for spatial greyscale", Proc. SID 17/2 (1976), pp. 75–77.
-pub fn encode_wbmp_from_dither(width: u32, height: u32, gray: &[u8]) -> Result<Vec<u8>> {
-    if width == 0 || height == 0 {
-        return Err(WbmpError::invalid(format!(
-            "encode_wbmp_from_dither: zero dimension (width={width}, height={height})"
-        )));
-    }
-    let pixel_count = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or_else(|| {
-            WbmpError::invalid("encode_wbmp_from_dither: width × height overflows usize")
-        })?;
-    if gray.len() != pixel_count {
-        return Err(WbmpError::invalid(format!(
-            "encode_wbmp_from_dither: gray length {} != width*height {pixel_count}",
-            gray.len()
-        )));
-    }
-
-    let w = width as usize;
-    let h = height as usize;
-    let stride = WbmpImage::row_stride(width);
-    let mut bits = vec![0u8; stride * h];
-
-    // Two i16 row buffers: `cur` is the row we're quantising now,
-    // `next` accumulates the forward-diffused errors for the row
-    // below. Swap on each row boundary so the algorithm runs in
-    // O(width) extra space rather than holding the whole frame in
-    // i16.
-    let mut cur: Vec<i16> = Vec::with_capacity(w);
-    let mut next: Vec<i16> = vec![0; w];
-
-    // Seed the first row from the input.
-    cur.extend(gray[..w].iter().map(|&g| g as i16));
-
-    for y in 0..h {
-        let row_out = &mut bits[y * stride..(y + 1) * stride];
-
-        // Pack output bits into a u8 accumulator, flushing once per
-        // 8 pixels rather than doing a read-modify-write store on
-        // every pixel. The bit positions never collide (each pixel
-        // sets exactly bit `7 - (x & 7)` of byte `x >> 3`), so this
-        // produces a byte-identical plane to the per-pixel `|=` form.
-        // r225 depth-mode: 1-store-per-8-pixels in the dither path,
-        // matching the chunked-eight pack the threshold path already
-        // uses.
-        let mut acc: u8 = 0;
-        for x in 0..w {
-            // Quantise to the nearest of {0, 255}; the boundary 128
-            // matches `encode_wbmp_from_threshold`'s "≥ 128 = white"
-            // convention so the two helpers agree on flat-grey input.
-            let (out_byte, out_value) = if cur[x] >= 128 {
-                (1u8, 255i16)
-            } else {
-                (0u8, 0i16)
-            };
-            // Accumulate the output bit MSB-first; flush at byte
-            // boundaries.
-            acc |= out_byte << (7 - (x & 7));
-            if (x & 7) == 7 {
-                row_out[x >> 3] = acc;
-                acc = 0;
-            }
-
-            // Diffuse the residual to the four forward neighbours.
-            // The weights sum to 16, and we apply each multiplied-up
-            // numerator with a divide-by-16 — the `+ 8` rounds the
-            // signed division to nearest rather than toward zero, so
-            // the diffused error stays symmetric around 0 for any
-            // residual sign.
-            let err = cur[x] - out_value;
-            if err != 0 {
-                if x + 1 < w {
-                    cur[x + 1] = cur[x + 1].saturating_add(div_round_i16(err * 7, 16));
-                }
-                if y + 1 < h {
-                    if x > 0 {
-                        next[x - 1] = next[x - 1].saturating_add(div_round_i16(err * 3, 16));
-                    }
-                    next[x] = next[x].saturating_add(div_round_i16(err * 5, 16));
-                    if x + 1 < w {
-                        next[x + 1] = next[x + 1].saturating_add(div_round_i16(err, 16));
-                    }
-                }
-            }
-        }
-        // Flush any partial trailing byte (`width % 8 != 0`). Unused
-        // low bits of `acc` stay zero by construction, matching the
-        // WBMP padding convention.
-        if (w & 7) != 0 {
-            row_out[w >> 3] = acc;
-        }
-
-        // Advance to the next row: `next` becomes the new `cur` and
-        // is biased with the next input row's grayscale values; the
-        // old `cur` is reset to zeros for the row after that.
-        if y + 1 < h {
-            cur.clear();
-            let next_in = &gray[(y + 1) * w..(y + 2) * w];
-            cur.extend(next.iter().zip(next_in.iter()).map(|(&e, &g)| g as i16 + e));
-            for slot in next.iter_mut() {
-                *slot = 0;
-            }
+/// The exact inverse of [`crate::decode_all`]; a single-element
+/// `frames` is byte-identical to [`crate::encode`] of that image.
+/// Either polarity is accepted per frame (each is brought to the wire
+/// layout). Errors with [`WbmpError::InvalidData`] for an empty slice,
+/// more than 16 frames, or a frame whose dimensions differ from the
+/// main image's.
+pub fn encode_frames(frames: &[WbmpImage], opts: &EncodeOptions) -> Result<Vec<u8>> {
+    let Some(main) = frames.first() else {
+        return Err(WbmpError::invalid(
+            "WBMP: at least the main image frame is required",
+        ));
+    };
+    for (i, f) in frames.iter().enumerate() {
+        if f.width != main.width || f.height != main.height {
+            return Err(WbmpError::invalid(format!(
+                "WBMP: frame {i} is {}×{}, the main image is {}×{} (all frames share the header dimensions)",
+                f.width, f.height, main.width, main.height
+            )));
         }
     }
-
-    encode_wbmp(width, height, &bits)
+    let bits: Vec<_> = frames.iter().map(|f| f.wire_bits()).collect();
+    write_file(
+        main.width,
+        main.height,
+        bits.iter().map(|b| b.as_ref()),
+        opts,
+    )
 }
 
-/// Round-half-to-nearest signed integer division by a small positive
-/// divisor. `div` must be > 0. Used by [`encode_wbmp_from_dither`] to
-/// distribute Floyd–Steinberg residuals symmetrically around zero.
-#[inline]
-fn div_round_i16(num: i16, div: i16) -> i16 {
-    debug_assert!(div > 0);
-    if num >= 0 {
-        (num + div / 2) / div
-    } else {
-        -(((-num) + div / 2) / div)
-    }
-}
-
-// --------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Registry-side Encoder trait surface.
-// --------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
+/// Factory registered with the codec registry. `params.options` is
+/// parsed as [`EncodeOptions`] (`quantize` / `threshold`, see the
+/// `CodecOptionsStruct` impl in [`crate::registry`]).
 #[cfg(feature = "registry")]
 pub fn make_encoder(params: &CodecParameters) -> oxideav_core::Result<Box<dyn Encoder>> {
+    let options: EncodeOptions = oxideav_core::parse_options(&params.options)?;
     let mut out_params = CodecParameters::video(CodecId::new(crate::CODEC_ID_STR));
     out_params.width = params.width;
     out_params.height = params.height;
     out_params.pixel_format = params.pixel_format;
+    out_params.options = params.options.clone();
     Ok(Box::new(WbmpEncoder {
         codec_id: CodecId::new(crate::CODEC_ID_STR),
         out_params,
+        options,
         pending: None,
         eof: false,
     }))
@@ -447,6 +162,7 @@ pub fn make_encoder(params: &CodecParameters) -> oxideav_core::Result<Box<dyn En
 struct WbmpEncoder {
     codec_id: CodecId,
     out_params: CodecParameters,
+    options: EncodeOptions,
     pending: Option<Vec<u8>>,
     eof: bool,
 }
@@ -478,52 +194,29 @@ impl Encoder for WbmpEncoder {
             oxideav_core::Error::invalid("WBMP encoder: height missing in CodecParameters")
         })?;
 
-        if vf.planes.is_empty() {
-            return Err(oxideav_core::Error::invalid("WBMP encoder: no planes"));
-        }
-        let plane = &vf.planes[0];
-
-        let bytes = match format {
-            // Wire layout is MSB-first / 1=white. MonoWhite already
-            // uses that bit polarity, MonoBlack inverts it.
-            PixelFormat::MonoWhite => encode_wbmp(width, height, &plane.data)?,
-            PixelFormat::MonoBlack => {
-                let mut inverted = plane.data.clone();
-                for b in inverted.iter_mut() {
-                    *b = !*b;
-                }
-                // Mask off any padding bits in the last byte of each
-                // row: width may not be a multiple of 8, and inverting
-                // would flip the padding zeros to ones, which the
-                // decoder ignores but is messy on disk. The mask byte
-                // comes from the `PlaneLayout` typed primitive — the
-                // same one the decoder's polarity-flip path uses in
-                // `decoder::invert_plane_in_place`, so the encoder and
-                // decoder agree on the convention by sharing the
-                // computation rather than duplicating it.
-                let layout = PlaneLayout::new(width, height)
-                    .map_err(|msg| oxideav_core::Error::invalid(msg.to_string()))?;
-                if layout.last_byte_pad_mask != 0xFF && layout.stride > 0 {
-                    for y in 0..height as usize {
-                        let last = y * layout.stride + (layout.stride - 1);
-                        if last < inverted.len() {
-                            inverted[last] &= layout.last_byte_pad_mask;
-                        }
-                    }
-                }
-                encode_wbmp(width, height, &inverted)?
+        let image = match format {
+            // The 1-bit layouts go through the frame bridge (either
+            // polarity; `encode_image` brings them to the wire form).
+            PixelFormat::MonoBlack | PixelFormat::MonoWhite => {
+                WbmpImage::from_video_frame(vf, &self.out_params)?
             }
-            // Convenience: accept an 8-bit Gray plane and threshold
-            // at the standard mid-grey cutoff.
-            PixelFormat::Gray8 => encode_wbmp_from_threshold(width, height, &plane.data, 128)?,
+            // Convenience: accept an 8-bit Gray plane and quantise it
+            // per the encoder options (threshold 128 by default).
+            PixelFormat::Gray8 => {
+                let plane = vf
+                    .image_planes()
+                    .first()
+                    .ok_or_else(|| oxideav_core::Error::invalid("WBMP encoder: no planes"))?;
+                let gray = repack_gray8(plane, width, height)?;
+                WbmpImage::from_gray8(width, height, &gray, self.options.quantize)?
+            }
             other => {
-                return Err(oxideav_core::Error::invalid(format!(
-                    "WBMP encoder: unsupported pixel format {other:?}"
-                )))
+                return Err(oxideav_core::Error::unsupported(format!(
+                "WBMP encoder: unsupported pixel format {other:?} (MonoBlack / MonoWhite / Gray8)"
+            )))
             }
         };
-
-        self.pending = Some(bytes);
+        self.pending = Some(encode_image(&image, &self.options)?);
         Ok(())
     }
     fn receive_packet(&mut self) -> oxideav_core::Result<Packet> {
@@ -550,7 +243,130 @@ impl Encoder for WbmpEncoder {
     }
 }
 
+/// Tightly pack a `Gray8` frame plane (any stride ≥ width) into `width
+/// × height` bytes.
+#[cfg(feature = "registry")]
+fn repack_gray8(
+    plane: &oxideav_core::VideoPlane,
+    width: u32,
+    height: u32,
+) -> oxideav_core::Result<Vec<u8>> {
+    let (w, h) = (width as usize, height as usize);
+    if plane.stride < w {
+        return Err(oxideav_core::Error::invalid(format!(
+            "WBMP encoder: Gray8 stride {} below width {w}",
+            plane.stride
+        )));
+    }
+    if plane.stride == w && plane.data.len() == w * h {
+        return Ok(plane.data.clone());
+    }
+    let mut out = Vec::with_capacity(w * h);
+    for y in 0..h {
+        let row = plane
+            .data
+            .get(y * plane.stride..y * plane.stride + w)
+            .ok_or_else(|| oxideav_core::Error::invalid("WBMP encoder: Gray8 plane too short"))?;
+        out.extend_from_slice(row);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Deprecated pre-contract entry points (one release).
+// ---------------------------------------------------------------------------
+
+/// Encode a WBMP Type-0 file from an already-packed monochrome bit
+/// plane (`ceil(width / 8) × height` bytes, MSB-first, 1 = white).
+#[deprecated(
+    note = "use oxideav_wbmp::encode(&WbmpImage::from_bits(..)?, &opts) (IMAGE_CRATE_API)"
+)]
+pub fn encode_wbmp(width: u32, height: u32, mono_bits: &[u8]) -> Result<Vec<u8>> {
+    write_file(
+        width,
+        height,
+        std::iter::once(mono_bits),
+        &EncodeOptions::default(),
+    )
+}
+
+/// Encode a general-form (§4.4.1) WBMP file with an optional
+/// [`ExtFields`] region — the pre-contract spelling of
+/// [`crate::encode`] with [`EncodeOptions::ext_fields`].
+#[deprecated(
+    note = "use oxideav_wbmp::encode(.., &EncodeOptions::new().with_ext_fields(..)) (IMAGE_CRATE_API)"
+)]
+pub fn encode_wbmp_ext(
+    width: u32,
+    height: u32,
+    mono_bits: &[u8],
+    ext_fields: Option<&ExtFields>,
+    strict: bool,
+) -> Result<Vec<u8>> {
+    let opts = EncodeOptions::default()
+        .with_ext_fields(ext_fields.cloned())
+        .with_strict(strict);
+    write_file(width, height, std::iter::once(mono_bits), &opts)
+}
+
+/// Encode an animated WBMP Type-0 file from packed planes — the
+/// pre-contract spelling of [`encode_frames`].
+#[deprecated(note = "use oxideav_wbmp::encode_frames (IMAGE_CRATE_API)")]
+pub fn encode_wbmp_frames(width: u32, height: u32, frames: &[&[u8]]) -> Result<Vec<u8>> {
+    write_file(
+        width,
+        height,
+        frames.iter().copied(),
+        &EncodeOptions::default(),
+    )
+}
+
+/// Threshold an 8-bit grayscale buffer into a 1-bit plane and wrap it
+/// in a WBMP Type-0 file (`>= threshold` → white).
+#[deprecated(
+    note = "use oxideav_wbmp::encode_gray8(.., &EncodeOptions::new().with_threshold(t)) (IMAGE_CRATE_API)"
+)]
+pub fn encode_wbmp_from_threshold(
+    width: u32,
+    height: u32,
+    gray: &[u8],
+    threshold: u8,
+) -> Result<Vec<u8>> {
+    legacy_gray(width, height, gray, Quantize::Threshold(threshold))
+}
+
+/// Floyd–Steinberg-dither an 8-bit grayscale buffer into a WBMP Type-0
+/// file.
+#[deprecated(
+    note = "use oxideav_wbmp::encode_gray8(.., &EncodeOptions::new().with_dither()) (IMAGE_CRATE_API)"
+)]
+pub fn encode_wbmp_from_dither(width: u32, height: u32, gray: &[u8]) -> Result<Vec<u8>> {
+    legacy_gray(width, height, gray, Quantize::Dither)
+}
+
+/// The pre-contract grey helpers required `gray.len() == width ×
+/// height` exactly (the contract path tolerates a longer buffer).
+fn legacy_gray(width: u32, height: u32, gray: &[u8], rule: Quantize) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(WbmpError::invalid(format!(
+            "WBMP: zero dimension (width={width}, height={height})"
+        )));
+    }
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| WbmpError::invalid("WBMP: width × height overflows usize"))?;
+    if gray.len() != pixel_count {
+        return Err(WbmpError::invalid(format!(
+            "WBMP: gray length {} != width*height {pixel_count}",
+            gray.len()
+        )));
+    }
+    let image = WbmpImage::from_gray8(width, height, gray, rule)?;
+    encode_image(&image, &EncodeOptions::default())
+}
+
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::decoder::{parse_wbmp, parse_wbmp_ext, parse_wbmp_frames};

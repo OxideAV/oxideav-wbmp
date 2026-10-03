@@ -1,12 +1,12 @@
 //! Criterion benchmarks for the WBMP multi-frame (animation) path —
-//! `encode_wbmp_frames` and `parse_wbmp_frames`.
+//! `encode_frames` and `decode_all`.
 //!
 //! Round 333 (depth-mode benchmark). Companion to `decode.rs`,
 //! `encode.rs`, and `roundtrip.rs`, which only exercise the single-image
 //! entry points. WAP-237 §4.2 / §4.5.1 allow a main image to be followed
 //! by 0..15 same-dimension animated sub-images; that sequence is decoded
-//! by `parse_wbmp_frames` (a per-frame body-length check + verbatim plane
-//! copy loop) and emitted by `encode_wbmp_frames` (a single shared header
+//! by `decode_all` (a per-frame body-length check + verbatim plane
+//! copy loop) and emitted by `encode_frames` (a single shared header
 //! followed by N back-to-back plane payloads). Those loops have no
 //! benchmark coverage elsewhere — every other bench stops at one frame.
 //!
@@ -25,7 +25,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-use oxideav_wbmp::{encode_wbmp_frames, parse_wbmp_frames, WbmpImage};
+use oxideav_wbmp::{decode_all, encode_frames, EncodeOptions, WbmpImage};
 
 fn xorshift_byte(state: &mut u32) -> u8 {
     *state ^= *state << 13;
@@ -70,9 +70,12 @@ fn build_frames(width: u32, height: u32, frame_count: usize) -> Vec<Vec<u8>> {
 }
 
 fn run_frames_roundtrip(width: u32, height: u32, frames: &[Vec<u8>]) {
-    let refs: Vec<&[u8]> = frames.iter().map(|f| f.as_slice()).collect();
-    let encoded = encode_wbmp_frames(width, height, &refs).expect("encode frames");
-    let decoded = parse_wbmp_frames(&encoded).expect("decode frames");
+    let images: Vec<WbmpImage> = frames
+        .iter()
+        .map(|f| WbmpImage::from_bits(width, height, f.clone()).expect("image"))
+        .collect();
+    let encoded = encode_frames(&images, &EncodeOptions::default()).expect("encode frames");
+    let decoded = decode_all(&encoded).expect("decode frames");
     criterion::black_box(decoded);
 }
 
