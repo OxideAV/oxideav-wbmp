@@ -9,6 +9,8 @@ homepage = "https://github.com/OxideAV/oxideav-wbmp"
 authors = ["Mark Karpeles"]
 description = "Pure-Rust WBMP (WAP Bitmap, monochrome) image codec — clean-room from the WAP Forum WAP-237 specification"
 readme = "README.md"
+# crates.io caps packages at 10 MiB; fixtures and the fuzz tree stay in git only.
+exclude = ["/tests", "/fuzz"]
 keywords = ["multimedia", "image", "wbmp", "wap", "pure-rust"]
 categories = ["multimedia::encoding", "multimedia::images"]
 

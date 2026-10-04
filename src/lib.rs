@@ -104,7 +104,8 @@ pub const CODEC_ID_STR: &str = "wbmp";
 // ---- the contract vocabulary ----------------------------------------------
 pub use api::{
     decode, decode_all, decode_all_with, decode_from, decode_rgb8, decode_rgba8, decode_with,
-    encode, encode_gray8, encode_rgb8, encode_rgba8, encode_to, info, probe, PROBE_MAX_DIMENSION,
+    encode, encode_all, encode_gray8, encode_rgb8, encode_rgba8, encode_to, info, probe,
+    PROBE_MAX_DIMENSION,
 };
 pub use decoder::MAX_ANIMATED_IMAGES;
 pub use encoder::encode_frames;

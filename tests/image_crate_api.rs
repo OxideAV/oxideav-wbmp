@@ -12,8 +12,8 @@
 //! standalone-build CI job covers `--no-default-features --lib`.
 
 use oxideav_wbmp::{
-    decode, decode_all, decode_rgb8, decode_with, encode, encode_frames, encode_gray8, info, probe,
-    DecodeOptions, EncodeOptions, Error, PixelFormat, WbmpImage,
+    decode, decode_all, decode_rgb8, decode_with, encode, encode_all, encode_frames, encode_gray8,
+    info, probe, DecodeOptions, EncodeOptions, Error, Frame, PixelFormat, WbmpImage,
 };
 
 /// Tiny deterministic PRNG so the property test needs no dependency.
@@ -182,6 +182,59 @@ fn property_random_animations_round_trip_exactly() {
         }
         assert_eq!(decode(&bytes).unwrap(), frames[0]);
     }
+}
+
+#[test]
+fn encode_all_mirrors_decode_all_and_encode_frames() {
+    let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+    for count in [1usize, 2, 7, 16] {
+        let (width, height) = (1 + rng.below(40) as u32, 1 + rng.below(12) as u32);
+        let frames: Vec<Frame> = (0..count)
+            .map(|i| {
+                Frame::new(
+                    WbmpImage::from_bits(width, height, random_bits(&mut rng, width, height))
+                        .unwrap(),
+                    i as u32,
+                )
+            })
+            .collect();
+        let bytes = encode_all(&frames, &EncodeOptions::default()).unwrap();
+        let images: Vec<WbmpImage> = frames.iter().map(|f| f.image.clone()).collect();
+        assert_eq!(
+            bytes,
+            encode_frames(&images, &EncodeOptions::default()).unwrap()
+        );
+        if count == 1 {
+            assert_eq!(
+                bytes,
+                encode(&images[0], &EncodeOptions::default()).unwrap()
+            );
+        }
+        let back = decode_all(&bytes).unwrap();
+        assert_eq!(back, frames, "{count} frames ({width}×{height})");
+        // Frames straight out of `decode_all` re-encode byte-identically.
+        assert_eq!(encode_all(&back, &EncodeOptions::default()).unwrap(), bytes);
+    }
+    // Empty, over-long and mismatched inputs are `InvalidData`.
+    let one = |w: u32, h: u32| {
+        Frame::new(
+            WbmpImage::from_bits(w, h, vec![0; (w as usize).div_ceil(8) * h as usize]).unwrap(),
+            0,
+        )
+    };
+    assert!(matches!(
+        encode_all(&[], &EncodeOptions::default()),
+        Err(Error::InvalidData(_))
+    ));
+    let too_many: Vec<Frame> = (0..17).map(|_| one(3, 2)).collect();
+    assert!(matches!(
+        encode_all(&too_many, &EncodeOptions::default()),
+        Err(Error::InvalidData(_))
+    ));
+    assert!(matches!(
+        encode_all(&[one(3, 2), one(2, 3)], &EncodeOptions::default()),
+        Err(Error::InvalidData(_))
+    ));
 }
 
 #[test]

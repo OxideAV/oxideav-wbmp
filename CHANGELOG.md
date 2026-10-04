@@ -8,6 +8,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `encode_all(&[Frame], &EncodeOptions) -> Result<Vec<u8>, Error>`: the
+  contract mirror of `decode_all` (main image + animated sub-images);
+  `encode_frames(&[WbmpImage], ..)` stays as the depth alias with
+  byte-identical output. Pinned: `decode_all(encode_all(frames)) ==
+  frames`, equality with `encode_frames` / `encode`, and the empty /
+  17-frame / mismatched-size `InvalidData` cases.
+- `Cargo.toml` `exclude = ["/tests", "/fuzz"]` (crates.io 10 MiB cap).
+
 - Image-crate API contract (`IMAGE_CRATE_API`) root vocabulary: `probe`,
   `info -> ImageInfo`, `decode`, `decode_with(&DecodeOptions)`,
   `decode_rgb8`, `decode_rgba8`, `decode_all` / `decode_all_with ->

@@ -112,12 +112,21 @@ pub(crate) fn encode_image(image: &WbmpImage, opts: &EncodeOptions) -> Result<Ve
 /// more than 16 frames, or a frame whose dimensions differ from the
 /// main image's.
 pub fn encode_frames(frames: &[WbmpImage], opts: &EncodeOptions) -> Result<Vec<u8>> {
-    let Some(main) = frames.first() else {
+    encode_images(frames.iter(), opts)
+}
+
+/// [`encode_frames`] over borrowed images; backs both it and
+/// [`crate::encode_all`] (which borrows through `Frame::image`).
+pub(crate) fn encode_images<'a>(
+    frames: impl ExactSizeIterator<Item = &'a WbmpImage> + Clone,
+    opts: &EncodeOptions,
+) -> Result<Vec<u8>> {
+    let Some(main) = frames.clone().next() else {
         return Err(WbmpError::invalid(
             "WBMP: at least the main image frame is required",
         ));
     };
-    for (i, f) in frames.iter().enumerate() {
+    for (i, f) in frames.clone().enumerate() {
         if f.width != main.width || f.height != main.height {
             return Err(WbmpError::invalid(format!(
                 "WBMP: frame {i} is {}×{}, the main image is {}×{} (all frames share the header dimensions)",
@@ -125,7 +134,7 @@ pub fn encode_frames(frames: &[WbmpImage], opts: &EncodeOptions) -> Result<Vec<u
             )));
         }
     }
-    let bits: Vec<_> = frames.iter().map(|f| f.wire_bits()).collect();
+    let bits: Vec<_> = frames.map(|f| f.wire_bits()).collect();
     write_file(
         main.width,
         main.height,

@@ -168,6 +168,19 @@ pub fn decode_all_with(bytes: &[u8], opts: &DecodeOptions) -> Result<Vec<Frame>>
     decoder::decode_frames(bytes, opts)
 }
 
+/// Encode an animated WBMP stream from [`Frame`]s — the mirror of
+/// [`decode_all`]: `frames[0].image` is the main image, `frames[1..]`
+/// (at most [`crate::MAX_ANIMATED_IMAGES`]) the animated sub-images in
+/// slice order, all sharing the main image's dimensions. `Frame::index`
+/// and `delay` are not stored (WAP-237 has one header and no timing).
+/// Byte-identical to [`crate::encode_frames`] over the same images and,
+/// for one frame, to [`encode`]; `decode_all(encode_all(frames)) ==
+/// frames`. [`crate::WbmpError::InvalidData`] for an empty slice, more
+/// than 16 frames, or mismatched dimensions.
+pub fn encode_all(frames: &[Frame], opts: &EncodeOptions) -> Result<Vec<u8>> {
+    encoder::encode_images(frames.iter().map(|f| &f.image), opts)
+}
+
 /// Read `r` to end and [`decode`] it. WBMP has no length field for its
 /// trailing animated sub-images, so the whole input is buffered. Read
 /// failures surface as [`crate::WbmpError::Io`].

@@ -50,7 +50,8 @@ if oxideav_wbmp::probe(&bytes) {
 | `encode` | `fn(&WbmpImage, &EncodeOptions) -> Result<Vec<u8>, Error>` — either polarity, written as the wire layout |
 | `encode_rgb8` / `encode_rgba8` / `encode_gray8` | `fn(w, h, &[u8], &EncodeOptions)` — 8-bit input quantised to 1 bit per `EncodeOptions::quantize` |
 | `encode_to` | `fn<W: Write>(&WbmpImage, &EncodeOptions, W) -> Result<(), Error>` |
-| `encode_frames` | `fn(&[WbmpImage], &EncodeOptions) -> Result<Vec<u8>, Error>` — the inverse of `decode_all` |
+| `encode_all` | `fn(&[Frame], &EncodeOptions) -> Result<Vec<u8>, Error>` — the mirror of `decode_all` (main image + up to 15 same-size animated sub-images, one header, no timing) |
+| `encode_frames` | `fn(&[WbmpImage], &EncodeOptions) -> Result<Vec<u8>, Error>` — depth alias of `encode_all` over bare images; byte-identical output |
 | `WbmpImage` | `{ width, height, format: PixelFormat, planes: Vec<Plane>, color: ColorInfo, metadata: Metadata }` (no palette) with `new` / `packed` / `from_bits` / `from_gray8` / `from_rgb8` / `from_rgba8`, `width()` / `height()` / `format()` / `stride()`, `as_bytes()` / `into_raw()`, `to_gray8()` / `to_rgb8()` / `to_rgba8()`, `is_white(x, y)`, `into_format()` |
 | `PixelFormat` | `= WbmpPixelFormat`: `MonoBlack` (native, 1 = white), `MonoWhite` (0 = white) — names and polarity mirror `oxideav_core::PixelFormat` |
 | `Error` | `= WbmpError`: `InvalidData`, `Unsupported`, `LimitExceeded`, `Io` |
@@ -244,7 +245,9 @@ no per-frame header, no timing ("It is User Agent dependent how those
 animated images are processed", §4.5.1). `decode_all` returns every
 frame in stream order (`Frame::index` 0 = main image, `delay` always
 `None`), `info().frames` counts them from the buffer length without
-reading a pixel, and `encode_frames` writes them back; a trailing run
+reading a pixel, and `encode_all` (or `encode_frames` over bare
+images) writes them back — `decode_all(encode_all(frames)) == frames`
+is pinned; a trailing run
 shorter than one frame is ignorable padding. `max_bytes` bounds each
 frame's plane; the §4.5.1 cap bounds the total at 16 planes.
 
