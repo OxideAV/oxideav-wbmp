@@ -36,6 +36,7 @@ if oxideav_wbmp::probe(&bytes) {
     let out: Vec<u8> = oxideav_wbmp::encode_rgba8(w, h, &rgba, &opts)?;
     std::fs::write("out.wbmp", out)?;
 }
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 | Item | Signature |
@@ -73,11 +74,16 @@ With the default-on `registry` feature the crate plugs into the
 `oxideav-core` registry:
 
 ```rust
+# let img = oxideav_wbmp::decode(&std::fs::read("in.wbmp")?)?;
+# let mut params = oxideav_core::CodecParameters::video(oxideav_core::CodecId::new("wbmp"));
+# params.width = Some(img.width());
+# params.height = Some(img.height());
 let mut ctx = oxideav_core::RuntimeContext::new();
 oxideav_wbmp::register(&mut ctx);                      // codec "wbmp" + the .wbmp container
 let dec = oxideav_wbmp::make_decoder(&params)?;        // / make_encoder
 let frame: oxideav_core::VideoFrame = img.into();      // From<WbmpImage>: one packed 1-bit plane
 let back = oxideav_wbmp::WbmpImage::from_video_frame(&frame, &params)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 The trait-side `Decoder` / `Encoder` are thin adapters over the
