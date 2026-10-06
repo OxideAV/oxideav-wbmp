@@ -6,6 +6,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/OxideAV/oxideav-wbmp/compare/v0.0.3...v0.0.4) - 2026-10-04
+
+### Other
+
+- Fleet sweep: encode_all mirror of decode_all, crates.io exclude
+- README examples use the current registry API
+- README in the contract section order + CHANGELOG Added / Changed / Deprecated
+- fuzz targets on the contract surface + standalone clippy in CI
+- image-crate API contract — root vocabulary, contract types, polarity fix, deprecated wrappers
+
 ### Added
 
 - `encode_all(&[Frame], &EncodeOptions) -> Result<Vec<u8>, Error>`: the
