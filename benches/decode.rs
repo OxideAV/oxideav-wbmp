@@ -41,9 +41,9 @@
 //! Run with:
 //!     cargo bench -p oxideav-wbmp --bench decode
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use oxideav_wbmp::{decode, encode, EncodeOptions, WbmpImage};
+use oxideav_wbmp::{EncodeOptions, WbmpImage, decode, encode};
 
 /// Cheap deterministic xorshift32 — synthesises pseudo-random bits so
 /// the inputs aren't trivially compressible / branch-predictable. WBMP

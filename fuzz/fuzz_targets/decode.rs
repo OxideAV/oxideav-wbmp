@@ -26,8 +26,8 @@
 
 use libfuzzer_sys::fuzz_target;
 use oxideav_wbmp::{
-    decode, decode_all, decode_rgb8, decode_rgba8, decode_with, info, probe, DecodeOptions,
-    PixelFormat, PROBE_MAX_DIMENSION,
+    DecodeOptions, PROBE_MAX_DIMENSION, PixelFormat, decode, decode_all, decode_rgb8, decode_rgba8,
+    decode_with, info, probe,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -132,8 +132,8 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!(rgba.data.len(), gray.len() * 4);
             for ((g, p3), p4) in gray
                 .iter()
-                .zip(rgb.data.chunks_exact(3))
-                .zip(rgba.data.chunks_exact(4))
+                .zip(rgb.data.as_chunks::<3>().0)
+                .zip(rgba.data.as_chunks::<4>().0)
             {
                 assert_eq!(p3, &[*g, *g, *g]);
                 assert_eq!(p4, &[*g, *g, *g, 255]);

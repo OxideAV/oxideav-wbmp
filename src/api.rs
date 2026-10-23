@@ -248,12 +248,12 @@ pub fn encode_to<W: Write>(image: &WbmpImage, opts: &EncodeOptions, mut w: W) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WbmpError;
     use crate::encoder::encode_frames;
     use crate::ext::{ExtFields, Parameter};
     use crate::header::write_header;
     use crate::image::{ColorInfo, PixelFormat, Plane};
     use crate::options::Quantize;
-    use crate::WbmpError;
 
     /// `w × h` wire-polarity plane with a deterministic pattern,
     /// padding bits zero.
@@ -332,11 +332,9 @@ mod tests {
         assert_eq!(i.fix_header, 0xE0);
         assert_eq!(
             i.ext_fields,
-            Some(ExtFields::ParameterPairs11(vec![Parameter::new(
-                b"a".to_vec(),
-                b"b".to_vec()
-            )
-            .unwrap()]))
+            Some(ExtFields::ParameterPairs11(vec![
+                Parameter::new(b"a".to_vec(), b"b".to_vec()).unwrap()
+            ]))
         );
         assert_eq!(i.data_offset, 7);
         assert!(matches!(
@@ -371,7 +369,9 @@ mod tests {
         .unwrap();
         assert_eq!(inv.format(), PixelFormat::MonoWhite);
         let expect: Vec<u8> = bits
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .flat_map(|r| [!r[0], !r[1] & 0xF8])
             .collect();
         assert_eq!(inv.as_bytes().unwrap(), &expect[..]);
@@ -419,9 +419,10 @@ mod tests {
             &DecodeOptions::default().with_format(PixelFormat::MonoWhite),
         )
         .unwrap();
-        assert!(inv
-            .iter()
-            .all(|fr| fr.image.format() == PixelFormat::MonoWhite));
+        assert!(
+            inv.iter()
+                .all(|fr| fr.image.format() == PixelFormat::MonoWhite)
+        );
         // Cap at 16 frames.
         let mut big = file(8, 1, &[0x00]);
         big.extend_from_slice(&[0x01; 40]);
@@ -510,10 +511,9 @@ mod tests {
     #[test]
     fn encode_with_ext_fields_decodes_leniently_only() {
         let img = WbmpImage::from_bits(8, 1, vec![0x5A]).unwrap();
-        let ext =
-            ExtFields::ParameterPairs11(vec![
-                Parameter::new(b"fmt".to_vec(), b"wbmp0".to_vec()).unwrap()
-            ]);
+        let ext = ExtFields::ParameterPairs11(vec![
+            Parameter::new(b"fmt".to_vec(), b"wbmp0".to_vec()).unwrap(),
+        ]);
         let opts = EncodeOptions::default()
             .with_ext_fields(ext.clone())
             .with_strict(true);

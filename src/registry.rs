@@ -200,7 +200,7 @@ impl CodecOptionsStruct for EncodeOptions {
                     other => {
                         return Err(oxideav_core::Error::invalid(format!(
                             "WBMP encoder: invalid quantize {other:?}"
-                        )))
+                        )));
                     }
                 };
                 Ok(())
@@ -370,7 +370,7 @@ mod tests {
         assert!(schema.iter().any(|f| f.name == "quantize"));
         assert!(schema.iter().any(|f| f.name == "threshold"));
 
-        use oxideav_core::{parse_options, CodecOptions};
+        use oxideav_core::{CodecOptions, parse_options};
         let parse = |pairs: &[(&str, &str)]| -> oxideav_core::Result<EncodeOptions> {
             let mut bag = CodecOptions::new();
             for (k, v) in pairs {

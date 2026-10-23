@@ -36,7 +36,7 @@
 //! `oxideav-core` and exercises only the framework-free encode path.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_wbmp::{decode, encode_gray8, EncodeOptions, PixelFormat, WbmpImage};
+use oxideav_wbmp::{EncodeOptions, PixelFormat, WbmpImage, decode, encode_gray8};
 
 fuzz_target!(|data: &[u8]| {
     // Need two control bytes plus at least one pixel.

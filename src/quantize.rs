@@ -36,7 +36,7 @@ pub(crate) fn threshold_bits(width: u32, height: u32, gray: &[u8], threshold: u8
         // one byte with no in-place read-modify-write.
         for (out_byte, in_chunk) in row_out
             .iter_mut()
-            .zip(row_in.chunks_exact(8))
+            .zip(row_in.as_chunks::<8>().0)
             .take(full_bytes)
         {
             *out_byte = ((in_chunk[0] >= threshold) as u8) << 7

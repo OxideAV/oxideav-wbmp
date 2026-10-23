@@ -16,7 +16,7 @@
 
 use crate::error::{Result, WbmpError};
 use crate::ext::ExtFields;
-use crate::header::{parse_header_ext_inner, parse_header_inner, ParsedHeader};
+use crate::header::{ParsedHeader, parse_header_ext_inner, parse_header_inner};
 use crate::image::{Frame, PlaneLayout, WbmpImage, WbmpPixelFormat};
 #[allow(deprecated)]
 use crate::image::{Plane, WbmpPlane};
@@ -780,7 +780,7 @@ mod tests {
         // before the dimensions. parse_wbmp would mis-read the
         // ParameterHeader octet as the Width MBI; parse_wbmp_ext must
         // skip the ExtFields and decode the real 8x1 image.
-        use crate::ext::{write_ext_fields, ExtFields, Parameter};
+        use crate::ext::{ExtFields, Parameter, write_ext_fields};
         let mut buf = Vec::new();
         write_mbi_u32(0, &mut buf); // Type = 0
         buf.push(0b1110_0000); // FixHeaderField: ext follow, type 11
@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn parse_ext_decodes_image_after_bitfield00_chain() {
-        use crate::ext::{write_ext_fields, ExtFields};
+        use crate::ext::{ExtFields, write_ext_fields};
         let mut buf = Vec::new();
         write_mbi_u32(0, &mut buf); // Type = 0
         buf.push(0b1000_0000); // FixHeaderField: ext follow, type 00

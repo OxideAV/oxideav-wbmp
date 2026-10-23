@@ -103,9 +103,9 @@ pub const CODEC_ID_STR: &str = "wbmp";
 
 // ---- the contract vocabulary ----------------------------------------------
 pub use api::{
-    decode, decode_all, decode_all_with, decode_from, decode_rgb8, decode_rgba8, decode_with,
-    encode, encode_all, encode_gray8, encode_rgb8, encode_rgba8, encode_to, info, probe,
-    PROBE_MAX_DIMENSION,
+    PROBE_MAX_DIMENSION, decode, decode_all, decode_all_with, decode_from, decode_rgb8,
+    decode_rgba8, decode_with, encode, encode_all, encode_gray8, encode_rgb8, encode_rgba8,
+    encode_to, info, probe,
 };
 pub use decoder::MAX_ANIMATED_IMAGES;
 pub use encoder::encode_frames;
@@ -118,24 +118,23 @@ pub use options::{DecodeOptions, EncodeOptions, Quantize};
 
 // ---- format depth (extension headers, MBIs) -------------------------------
 pub use ext::{
-    parse_ext_fields, parse_ext_fields_strict, write_ext_fields, write_ext_fields_strict,
-    ExtFieldType, ExtFields, FixHeaderField, Parameter, MAX_EXT_FIELD_BYTES,
+    ExtFieldType, ExtFields, FixHeaderField, MAX_EXT_FIELD_BYTES, Parameter, parse_ext_fields,
+    parse_ext_fields_strict, write_ext_fields, write_ext_fields_strict,
 };
 #[doc(hidden)]
 pub use header::{write_header, write_header_ext};
 #[doc(hidden)]
 pub use image::PlaneLayout;
 pub use mbi::{
-    mbi_u32_len, read_mbi_u32, read_mbi_u32_strict, write_mbi_u32, MAX_MBI_BYTES, MAX_U32_MBI_BYTES,
+    MAX_MBI_BYTES, MAX_U32_MBI_BYTES, mbi_u32_len, read_mbi_u32, read_mbi_u32_strict, write_mbi_u32,
 };
 
 // ---- deprecated pre-contract entry points (one release) --------------------
 #[allow(deprecated)]
 pub use decoder::{
-    parse_wbmp, parse_wbmp_as, parse_wbmp_as_with_limits, parse_wbmp_ext,
-    parse_wbmp_ext_with_limits, parse_wbmp_frames, parse_wbmp_frames_with_limits,
-    parse_wbmp_strict, parse_wbmp_strict_with_limits, parse_wbmp_with_limits, WbmpAnimation,
-    WbmpImageExt,
+    WbmpAnimation, WbmpImageExt, parse_wbmp, parse_wbmp_as, parse_wbmp_as_with_limits,
+    parse_wbmp_ext, parse_wbmp_ext_with_limits, parse_wbmp_frames, parse_wbmp_frames_with_limits,
+    parse_wbmp_strict, parse_wbmp_strict_with_limits, parse_wbmp_with_limits,
 };
 #[allow(deprecated)]
 pub use encoder::{
@@ -144,7 +143,7 @@ pub use encoder::{
 };
 #[allow(deprecated)]
 pub use header::{
-    parse_header, parse_header_ext, parse_header_ext_strict, parse_header_strict, Header, HeaderExt,
+    Header, HeaderExt, parse_header, parse_header_ext, parse_header_ext_strict, parse_header_strict,
 };
 #[allow(deprecated)]
 pub use image::WbmpPlane;

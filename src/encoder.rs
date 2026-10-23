@@ -190,7 +190,7 @@ impl Encoder for WbmpEncoder {
             _ => {
                 return Err(oxideav_core::Error::invalid(
                     "WBMP encoder: expected video frame",
-                ))
+                ));
             }
         };
         let format = self.out_params.pixel_format.ok_or_else(|| {
@@ -221,8 +221,8 @@ impl Encoder for WbmpEncoder {
             }
             other => {
                 return Err(oxideav_core::Error::unsupported(format!(
-                "WBMP encoder: unsupported pixel format {other:?} (MonoBlack / MonoWhite / Gray8)"
-            )))
+                    "WBMP encoder: unsupported pixel format {other:?} (MonoBlack / MonoWhite / Gray8)"
+                )));
             }
         };
         self.pending = Some(encode_image(&image, &self.options)?);

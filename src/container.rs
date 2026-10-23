@@ -15,8 +15,8 @@ use oxideav_core::{
     StreamInfo, TimeBase,
 };
 use oxideav_core::{
-    ContainerRegistry, Demuxer, Muxer, ProbeData, ProbeScore, ReadSeek, WriteSeek,
-    PROBE_SCORE_EXTENSION,
+    ContainerRegistry, Demuxer, Muxer, PROBE_SCORE_EXTENSION, ProbeData, ProbeScore, ReadSeek,
+    WriteSeek,
 };
 
 use crate::header::parse_header_ext_inner;

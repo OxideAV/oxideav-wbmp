@@ -40,15 +40,15 @@ use std::io::Cursor;
 
 use oxideav_core::{
     CodecId, CodecParameters, CodecRegistry, ContainerRegistry, Error as CoreError, Frame,
-    MediaType, Packet, PixelFormat, ReadSeek, StreamInfo, TimeBase, VideoFrame, VideoPlane,
-    WriteSeek, PROBE_SCORE_EXTENSION,
+    MediaType, PROBE_SCORE_EXTENSION, Packet, PixelFormat, ReadSeek, StreamInfo, TimeBase,
+    VideoFrame, VideoPlane, WriteSeek,
 };
 use oxideav_wbmp::container::probe;
 use oxideav_wbmp::decoder::make_decoder;
 use oxideav_wbmp::encoder::make_encoder;
 use oxideav_wbmp::{
-    decode, encode, register, register_codecs, register_containers, register_registries,
-    EncodeOptions, WbmpImage,
+    EncodeOptions, WbmpImage, decode, encode, register, register_codecs, register_containers,
+    register_registries,
 };
 
 /// Wire-polarity plane → complete file through the contract encoder.

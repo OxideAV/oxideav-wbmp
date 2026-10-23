@@ -12,9 +12,8 @@
 //! would surface.
 
 use oxideav_wbmp::{
-    decode, decode_with, encode, info, parse_ext_fields_strict, write_ext_fields_strict,
     DecodeOptions, EncodeOptions, Error, ExtFieldType, ExtFields, FixHeaderField, Parameter,
-    WbmpImage,
+    WbmpImage, decode, decode_with, encode, info, parse_ext_fields_strict, write_ext_fields_strict,
 };
 
 /// A 16×2 image (stride 2, 4 packed bytes) used by several cases.

@@ -34,7 +34,7 @@
 //! `oxideav-core`.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_wbmp::{info, parse_ext_fields, write_ext_fields, FixHeaderField};
+use oxideav_wbmp::{FixHeaderField, info, parse_ext_fields, write_ext_fields};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(header) = info(data) else {

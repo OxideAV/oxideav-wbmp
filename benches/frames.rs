@@ -23,9 +23,9 @@
 //! Run with:
 //!     cargo bench -p oxideav-wbmp --bench frames
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use oxideav_wbmp::{decode_all, encode_frames, EncodeOptions, WbmpImage};
+use oxideav_wbmp::{EncodeOptions, WbmpImage, decode_all, encode_frames};
 
 fn xorshift_byte(state: &mut u32) -> u8 {
     *state ^= *state << 13;

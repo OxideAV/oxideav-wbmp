@@ -25,7 +25,7 @@
 //! [`crate::WbmpImage`] for how the decoded plane lays out).
 
 use crate::error::{Result, WbmpError};
-use crate::ext::{parse_ext_fields, parse_ext_fields_strict, ExtFields, FixHeaderField};
+use crate::ext::{ExtFields, FixHeaderField, parse_ext_fields, parse_ext_fields_strict};
 use crate::mbi::{read_mbi_u32, read_mbi_u32_strict, write_mbi_u32};
 
 /// Everything the header parsers learn before the pixel data: the
@@ -611,7 +611,7 @@ mod tests {
         // parameter pair. The plain parser would mis-read the
         // ParameterHeader octet as the width MBI; parse_header_ext must
         // skip the ExtFields and land on the real Width/Height.
-        use crate::ext::{write_ext_fields, ExtFields, Parameter};
+        use crate::ext::{ExtFields, Parameter, write_ext_fields};
         let mut buf = Vec::new();
         // Type = 0.
         write_mbi_u32(0, &mut buf);
@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn ext_skips_bitfield00_chain_before_dimensions() {
-        use crate::ext::{write_ext_fields, ExtFields};
+        use crate::ext::{ExtFields, write_ext_fields};
         let mut buf = Vec::new();
         write_mbi_u32(0, &mut buf);
         buf.push(0b1000_0000); // bit7=1, type=00
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn ext_rejects_zero_dimension_after_ext() {
-        use crate::ext::{write_ext_fields, ExtFields};
+        use crate::ext::{ExtFields, write_ext_fields};
         let mut buf = Vec::new();
         write_mbi_u32(0, &mut buf);
         buf.push(0b1000_0000);
@@ -749,7 +749,7 @@ mod tests {
 
     #[test]
     fn ext_strict_accepts_conformant_type11_pair() {
-        use crate::ext::{write_ext_fields_strict, ExtFields, Parameter};
+        use crate::ext::{ExtFields, Parameter, write_ext_fields_strict};
         let mut buf = Vec::new();
         write_mbi_u32(0, &mut buf);
         buf.push(0b1110_0000); // ext follow, type 11

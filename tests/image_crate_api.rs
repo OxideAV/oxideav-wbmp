@@ -12,8 +12,8 @@
 //! standalone-build CI job covers `--no-default-features --lib`.
 
 use oxideav_wbmp::{
-    decode, decode_all, decode_rgb8, decode_with, encode, encode_all, encode_frames, encode_gray8,
-    info, probe, DecodeOptions, EncodeOptions, Error, Frame, PixelFormat, WbmpImage,
+    DecodeOptions, EncodeOptions, Error, Frame, PixelFormat, WbmpImage, decode, decode_all,
+    decode_rgb8, decode_with, encode, encode_all, encode_frames, encode_gray8, info, probe,
 };
 
 /// Tiny deterministic PRNG so the property test needs no dependency.

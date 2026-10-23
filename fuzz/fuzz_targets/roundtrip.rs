@@ -16,7 +16,7 @@
 //! encoder accepts it.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_wbmp::{decode, encode, EncodeOptions, PixelFormat, WbmpImage};
+use oxideav_wbmp::{EncodeOptions, PixelFormat, WbmpImage, decode, encode};
 
 fuzz_target!(|data: &[u8]| {
     // Need at least two bytes for the dimension nibbles.

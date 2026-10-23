@@ -16,7 +16,7 @@
 //! never links `oxideav-core`.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_wbmp::{decode, decode_with, info, DecodeOptions};
+use oxideav_wbmp::{DecodeOptions, decode, decode_with, info};
 
 fuzz_target!(|data: &[u8]| {
     let strict_opts = DecodeOptions::default().with_strict(true);

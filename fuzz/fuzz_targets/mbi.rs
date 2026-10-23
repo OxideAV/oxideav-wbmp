@@ -31,7 +31,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use oxideav_wbmp::{
-    mbi_u32_len, read_mbi_u32, read_mbi_u32_strict, write_mbi_u32, MAX_U32_MBI_BYTES,
+    MAX_U32_MBI_BYTES, mbi_u32_len, read_mbi_u32, read_mbi_u32_strict, write_mbi_u32,
 };
 
 fuzz_target!(|data: &[u8]| {

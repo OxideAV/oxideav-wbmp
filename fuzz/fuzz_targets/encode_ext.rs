@@ -27,7 +27,7 @@
 //! never links `oxideav-core`.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_wbmp::{decode, encode, info, EncodeOptions, ExtFields, Parameter, WbmpImage};
+use oxideav_wbmp::{EncodeOptions, ExtFields, Parameter, WbmpImage, decode, encode, info};
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 3 {

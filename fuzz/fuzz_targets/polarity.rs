@@ -26,7 +26,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use oxideav_wbmp::{
-    decode, decode_with, encode, DecodeOptions, EncodeOptions, PixelFormat, WbmpImage,
+    DecodeOptions, EncodeOptions, PixelFormat, WbmpImage, decode, decode_with, encode,
 };
 
 fuzz_target!(|data: &[u8]| {

@@ -37,7 +37,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use oxideav_wbmp::{
-    info, parse_ext_fields_strict, parse_header_ext_strict, write_ext_fields_strict, ExtFields,
+    ExtFields, info, parse_ext_fields_strict, parse_header_ext_strict, write_ext_fields_strict,
 };
 
 fuzz_target!(|data: &[u8]| {
