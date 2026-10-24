@@ -8,9 +8,9 @@
 use std::io::{Read, Write};
 
 use crate::decoder;
+use crate::decoder::MAX_ANIMATED_IMAGES;
 use crate::encoder;
 use crate::error::Result;
-use crate::ext::MAX_EXT_FIELD_BYTES;
 use crate::image::{Frame, ImageInfo, PlaneLayout, RgbImage, RgbaImage, WbmpImage};
 use crate::mbi::peek_mbi_u32;
 use crate::options::{DecodeOptions, EncodeOptions};
@@ -22,84 +22,97 @@ use crate::options::{DecodeOptions, EncodeOptions};
 /// [`DecodeOptions`], not by this.
 pub const PROBE_MAX_DIMENSION: u32 = 16_384;
 
-/// `true` when `bytes` begins with a plausible WBMP Type-0 header:
-/// `Type` MBI `0`, a `FixHeaderField` octet (its extension-header
-/// region, if flagged, well-formed and skipped), non-zero `Width` and
-/// `Height` MBIs at most [`PROBE_MAX_DIMENSION`], and at least the
-/// first pixel row present after the header. Total, allocation-free,
-/// `false` on short input. Says nothing about the rest of the body —
-/// see [`info`] / [`decode`].
+/// `true` when `bytes` is, in its entirety, a well-formed WBMP Type-0
+/// file (WAP-237 §4.5.1, Tables 4-5 / 4-6):
 ///
-/// A probe buffer may be a truncated preview, so only the first row
-/// (not the whole image) is required.
+/// * `TypeField` is the single octet `0x00` and `FixHeaderField` is
+///   `0x00` — Type 0 carries no extension headers ("Extension headers
+///   MUST NOT be presented in this format"), and its reserved bits are 0;
+/// * `Width` / `Height` are shortest-form MBIs (§4.3.1: no leading
+///   `0x80`), non-zero and at most [`PROBE_MAX_DIMENSION`];
+/// * the bytes after the header are *exactly* `k × height × ceil(width /
+///   8)` with `k` in `1..=16` (the main image plus 0..15 animated images,
+///   §4.2 `Image-data`) — no trailing slack, no truncation;
+/// * every row's unused trailing bits are zero (§4.5.1: "all unused bits
+///   must be set to zero").
+///
+/// WBMP has no magic number, so a header-only parse is far too weak a
+/// signal (an MPEG program-stream pack header `00 00 01 BA` parses as a
+/// 1×7457 Type-0 header); the exact payload length is what makes the
+/// sniff discriminating. Pass the whole file. Total, allocation-free,
+/// `false` on short or truncated input. The lenient decoder ([`info`] /
+/// [`decode`]) still accepts more than this (extension headers,
+/// trailing bytes, dirty padding).
 pub fn probe(bytes: &[u8]) -> bool {
-    sniff(bytes).is_some()
+    matches!(sniff(bytes), Some(Sniff::Exact))
 }
 
-/// The allocation-free header walk behind [`probe`]: `(width, height,
-/// data_offset)` for a plausible header.
-pub(crate) fn sniff(bytes: &[u8]) -> Option<(u32, u32, usize)> {
-    let mut off = 0usize;
-    if peek_mbi_u32(bytes, &mut off)? != 0 {
+/// Outcome of the strict Type-0 header walk behind [`probe`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sniff {
+    /// The buffer is exactly the header plus `1..=16` whole images, all
+    /// with zero padding bits.
+    Exact,
+    /// The header is a well-formed Type-0 header and the buffer ends
+    /// inside the image data (a truncated probe preview) with every
+    /// complete row present so far — at least one — zero-padded.
+    Truncated,
+}
+
+/// Strict Type-0 header (`00 00` then two shortest-form MBIs) →
+/// `(width, height, data_offset)`, plausibility-bounded.
+fn strict_header(bytes: &[u8]) -> Option<(u32, u32, usize)> {
+    if bytes.first()? != &0x00 || bytes.get(1)? != &0x00 {
         return None;
     }
-    let fix = *bytes.get(off)?;
-    off += 1;
-    if fix & 0x80 != 0 {
-        // ExtFields follow (§4.4.1); skip the region per its type with
-        // exactly the lenient parser's acceptance rules (so `probe` ⇒
-        // `info` succeeds on the header).
-        let start = off;
-        match (fix >> 5) & 0b11 {
-            0b00 => loop {
-                if off - start >= MAX_EXT_FIELD_BYTES {
-                    return None;
-                }
-                let b = *bytes.get(off)?;
-                off += 1;
-                if b & 0x80 == 0 {
-                    break;
-                }
-            },
-            0b01 | 0b10 => {
-                bytes.get(off)?;
-                off += 1;
-            }
-            _ => loop {
-                if off - start >= MAX_EXT_FIELD_BYTES {
-                    return None;
-                }
-                let header = *bytes.get(off)?;
-                off += 1;
-                let ident = ((header >> 4) & 0b111) as usize;
-                let value = (header & 0b1111) as usize;
-                if ident == 0 || value == 0 {
-                    return None;
-                }
-                off = off.checked_add(ident + value)?;
-                if off > bytes.len() {
-                    return None;
-                }
-                if header & 0x80 == 0 {
-                    break;
-                }
-            },
+    let mut off = 2usize;
+    let dim = |off: &mut usize| -> Option<u32> {
+        // §4.3.1 shortest encoding: never a leading 0x80 octet.
+        if *bytes.get(*off)? == 0x80 {
+            return None;
         }
-    }
-    let width = peek_mbi_u32(bytes, &mut off)?;
-    let height = peek_mbi_u32(bytes, &mut off)?;
+        peek_mbi_u32(bytes, off)
+    };
+    let width = dim(&mut off)?;
+    let height = dim(&mut off)?;
     if width == 0 || height == 0 || width > PROBE_MAX_DIMENSION || height > PROBE_MAX_DIMENSION {
-        return None;
-    }
-    // At least the first pixel row must be present.
-    let stride = WbmpImage::row_stride(width);
-    if bytes.len() < off.checked_add(stride)? {
         return None;
     }
     Some((width, height, off))
 }
 
-/// Header only: dimensions, native [`PixelFormat`] (`MonoBlack`),
+/// The allocation-free strict sniff shared by [`probe`] and the
+/// registry container probe.
+pub(crate) fn sniff(bytes: &[u8]) -> Option<Sniff> {
+    let (width, height, off) = strict_header(bytes)?;
+    let stride = WbmpImage::row_stride(width);
+    let frame = stride.checked_mul(height as usize)?;
+    let body = &bytes[off..];
+    if body.len() < stride {
+        return None;
+    }
+    let pad = stride * 8 - width as usize;
+    if pad != 0 {
+        let unused = (1u8 << pad) - 1;
+        if body
+            .chunks_exact(stride)
+            .any(|row| row[stride - 1] & unused != 0)
+        {
+            return None;
+        }
+    }
+    if body.len() < frame {
+        return Some(Sniff::Truncated);
+    }
+    let k = body.len() / frame;
+    if body.len().is_multiple_of(frame) && (1..=1 + MAX_ANIMATED_IMAGES).contains(&k) {
+        Some(Sniff::Exact)
+    } else {
+        None
+    }
+}
+
+/// Header only: dimensions, native [`PixelFormat`](crate::PixelFormat) (`MonoBlack`),
 /// `frames` (the main image plus the animated sub-images that fit in
 /// the buffer, `1..=16`), the (always absent) alpha / metadata flags,
 /// WBMP's default colour, plus the raw `FixHeaderField`, any
@@ -121,7 +134,7 @@ pub fn info(bytes: &[u8]) -> Result<ImageInfo> {
 }
 
 /// Decode the main image into its native layout
-/// ([`PixelFormat::MonoBlack`]: one packed plane, `ceil(width / 8)`
+/// ([`PixelFormat::MonoBlack`](crate::PixelFormat::MonoBlack): one packed plane, `ceil(width / 8)`
 /// bytes per row, 1 = white) with [`DecodeOptions::default`] (lenient
 /// header, packed plane capped at 1 GiB).
 pub fn decode(bytes: &[u8]) -> Result<WbmpImage> {
@@ -278,32 +291,64 @@ mod tests {
     }
 
     #[test]
-    fn probe_is_total_and_header_only() {
+    fn probe_is_total_and_whole_file_exact() {
         assert!(!probe(b""));
         assert!(!probe(&[0x00]));
         assert!(!probe(&[0x00, 0x00, 0x01]));
-        assert!(!probe(&[0x00, 0x00, 0x01, 0x01])); // no first row
+        assert!(!probe(&[0x00, 0x00, 0x01, 0x01])); // no pixel data
         assert!(probe(&[0x00, 0x00, 0x01, 0x01, 0x80]));
         assert!(!probe(&[0x01, 0x00, 0x01, 0x01, 0x80])); // Type 1
         assert!(!probe(&[0x00, 0x00, 0x00, 0x01, 0x80])); // zero width
         assert!(!probe(b"\x89PNG\r\n\x1a\n"));
         // Absurd dimensions are noise.
         assert!(!probe(&[0x00, 0x00, 0x82, 0x80, 0x00, 0x01, 0, 0, 0, 0]));
-        // A full file always probes; a preview holding one row too.
+        // Non-shortest MBI (§4.3.1: never a leading 0x80).
+        assert!(!probe(&[0x00, 0x00, 0x80, 0x01, 0x01, 0x80]));
+        // A full file probes; a truncated one or one with slack does not.
         let f = file(13, 7, &pattern_bits(13, 7));
         assert!(probe(&f));
-        assert!(probe(&f[..6]));
-        assert!(!probe(&f[..5]));
-        // Extension headers are skipped: Type-11 pair "a=b" then 1×1.
+        assert!(!probe(&f[..6]));
+        assert!(!probe(&f[..f.len() - 1]));
+        let mut slack = f.clone();
+        slack.push(0);
+        assert!(!probe(&slack));
+        // Main image + 15 animated images (16 frames) probes; 17 does not.
+        let one = pattern_bits(13, 7);
+        let mut anim = f.clone();
+        for _ in 0..15 {
+            anim.extend_from_slice(&one);
+        }
+        assert!(probe(&anim));
+        anim.extend_from_slice(&one);
+        assert!(!probe(&anim));
+        // §4.5.1 unused bits must be zero: 13 px → 3 padding bits.
+        let mut dirty = f.clone();
+        *dirty.last_mut().unwrap() |= 0x01;
+        assert!(!probe(&dirty));
+        // Type 0 MUST NOT carry extension headers (Table 4-6): a
+        // well-formed Type-11 pair "a=b" before a 1×1 image is not a
+        // Type-0 file for the sniff (the lenient decoder still reads it).
         let ext = [0x00, 0xE0, 0x11, b'a', b'b', 0x01, 0x01, 0x80];
-        assert!(probe(&ext));
-        assert!(!probe(&ext[..7]));
-        // Bitfield00 chain.
-        assert!(probe(&[0x00, 0x80, 0x81, 0x01, 0x01, 0x01, 0x80]));
-        // Reserved01 single octet.
-        assert!(probe(&[0x00, 0xA0, 0x55, 0x01, 0x01, 0x80]));
-        // Type-11 header with a zero size is malformed.
-        assert!(!probe(&[0x00, 0xE0, 0x10, 0x01, 0x01, 0x80]));
+        assert!(!probe(&ext));
+        assert!(info(&ext).is_ok());
+        // Reserved FixHeaderField bits set.
+        assert!(!probe(&[0x00, 0x01, 0x01, 0x01, 0x80]));
+        // MPEG program-stream pack header: `00 00 01 BA ..` parses as a
+        // 1×7457 header, but the body is neither the right length nor
+        // zero-padded.
+        let mut ps = vec![0x00, 0x00, 0x01, 0xBA, 0x44, 0x00, 0x04, 0x00, 0x04, 0x01];
+        ps.resize(4096, 0x5A);
+        assert!(!probe(&ps));
+        assert_eq!(sniff(&ps), None);
+    }
+
+    #[test]
+    fn sniff_reports_truncated_previews() {
+        let f = file(64, 4, &[0x00; 32]);
+        assert_eq!(sniff(&f), Some(Sniff::Exact));
+        assert_eq!(sniff(&f[..f.len() - 3]), Some(Sniff::Truncated));
+        // At least the first row must be present.
+        assert_eq!(sniff(&f[..f.len() - 25]), None);
     }
 
     #[test]

@@ -41,7 +41,7 @@ if oxideav_wbmp::probe(&bytes) {
 
 | Item | Signature |
 |---|---|
-| `probe` | `fn(&[u8]) -> bool` — plausible Type-0 header (`Type` 0, well-formed `FixHeaderField` / extension region, non-zero dimensions ≤ `PROBE_MAX_DIMENSION`, first row present); allocation-free |
+| `probe` | `fn(&[u8]) -> bool` — the whole buffer is a WAP-237 §4.5.1 Type-0 file: `Type` 0, `FixHeaderField` 0 (no extension headers), shortest-form non-zero dimensions ≤ `PROBE_MAX_DIMENSION`, zero row padding bits, and exactly 1..=16 whole images after the header (WBMP has no magic, so the length is the signature); allocation-free. The registry probe scores such a buffer 50 (75 with `.wbmp`), a probe-window-truncated one 25 only with `.wbmp`, anything else 0 |
 | `info` | `fn(&[u8]) -> Result<ImageInfo, Error>` — `width`, `height`, `format`, `frames` (1..=16), `has_alpha`, `color`, `has_icc` / `has_exif` / `has_xmp`, plus `fix_header`, `ext_fields`, `data_offset` |
 | `decode` / `decode_with` | `fn(&[u8][, &DecodeOptions]) -> Result<WbmpImage, Error>` — main image, native layout |
 | `decode_rgb8` / `decode_rgba8` | `-> Result<RgbImage / RgbaImage, Error>` — `{ width, height, data }`, tightly packed, 3 / 4 bytes per pixel |
@@ -263,7 +263,7 @@ standalone path and never links `oxideav-core`.
 * `decode` — arbitrary bytes through the whole contract read side
   (`probe`, `info`, `decode`, strict and `MonoWhite` `decode_with`,
   `decode_all`, `decode_rgb8`, `decode_rgba8`) with the cross-function
-  invariants pinned: `probe ⇒ info`, `info` + complete body ⇒ `decode`,
+  invariants pinned: `probe ⇒ info` and `probe ⇒ decode`, `info` + complete body ⇒ `decode`,
   `decode_all().len() == info.frames`, strict ⊆ lenient, inverse
   polarity = bytewise inversion with zero padding, raw paths = 0 / 255
   expansion.

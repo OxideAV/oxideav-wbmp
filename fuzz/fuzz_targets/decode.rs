@@ -12,7 +12,8 @@
 //! before the allocator is touched). On top of "returns", the target
 //! pins the cross-function invariants:
 //!
-//!  * `probe(b)` ⇒ `info(b)` succeeds with dimensions ≤ `PROBE_MAX_DIMENSION`.
+//!  * `probe(b)` ⇒ `info(b)` succeeds with dimensions ≤ `PROBE_MAX_DIMENSION`,
+//!    and `decode(b)` succeeds (the sniff demands a complete file).
 //!  * `info` ⇒ `decode` succeeds iff the buffer holds the main image
 //!    (header only, limit-free), and then `decode_all().len() ==
 //!    info.frames`, every frame `stride × height` bytes, native
@@ -41,6 +42,9 @@ fuzz_target!(|data: &[u8]| {
     }
 
     let lenient = decode(data);
+    if probed {
+        assert!(lenient.is_ok(), "a probe-accepted file must decode");
+    }
     let strict = decode_with(data, &DecodeOptions::default().with_strict(true));
     if let Ok(simg) = &strict {
         let limg = lenient

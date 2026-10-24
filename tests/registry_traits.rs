@@ -43,7 +43,7 @@ use oxideav_core::{
     MediaType, PROBE_SCORE_EXTENSION, Packet, PixelFormat, ReadSeek, StreamInfo, TimeBase,
     VideoFrame, VideoPlane, WriteSeek,
 };
-use oxideav_wbmp::container::probe;
+use oxideav_wbmp::container::{PROBE_SCORE_EXACT, probe};
 use oxideav_wbmp::decoder::make_decoder;
 use oxideav_wbmp::encoder::make_encoder;
 use oxideav_wbmp::{
@@ -419,123 +419,119 @@ fn encoder_trait_rejects_missing_pixel_format() {
 // 4. Container probe.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn probe_grants_extension_match_when_hint_matches() {
-    // Bare extension hint, with a tiny buffer that wouldn't otherwise
-    // sniff. Probe must return PROBE_SCORE_EXTENSION.
-    let data = oxideav_core::ProbeData {
-        buf: &[],
-        ext: Some("wbmp"),
-    };
-    assert_eq!(probe(&data), PROBE_SCORE_EXTENSION);
+fn pd<'a>(buf: &'a [u8], ext: Option<&'a str>) -> oxideav_core::ProbeData<'a> {
+    oxideav_core::ProbeData { buf, ext }
+}
+
+fn wbmp_file(w: u32, h: u32, body: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    oxideav_wbmp::write_header(w, h, &mut buf);
+    buf.extend_from_slice(body);
+    buf
 }
 
 #[test]
-fn probe_grants_half_score_to_well_formed_payload_without_ext() {
-    // Build a real 8×1 file (4-byte header + 1 body byte = 5 bytes —
-    // exactly the minimum the probe accepts), feed it with no extension.
-    // Probe must return PROBE_SCORE_EXTENSION / 2.
-    let mut buf = Vec::new();
-    {
-        use oxideav_wbmp::write_header;
-        write_header(8, 1, &mut buf);
-    }
-    buf.push(0x55);
+fn probe_extension_hint_alone_never_selects_the_container() {
+    // No content, or content that is not WBMP: the hint does not lift a
+    // score from nothing (the registry's extension fallback handles the
+    // "nothing probed" case on its own).
+    assert_eq!(probe(&pd(&[], Some("wbmp"))), 0);
+    assert_eq!(probe(&pd(b"not a bitmap at all", Some("wbmp"))), 0);
+}
+
+#[test]
+fn probe_scores_an_exact_whole_file() {
+    // 8×1: 4-byte header + 1 body byte.
+    let buf = wbmp_file(8, 1, &[0x55]);
     assert_eq!(buf.len(), 5);
-    let data = oxideav_core::ProbeData {
-        buf: &buf,
-        ext: None,
-    };
-    assert_eq!(probe(&data), PROBE_SCORE_EXTENSION / 2);
+    assert_eq!(probe(&pd(&buf, None)), PROBE_SCORE_EXACT);
+    assert_eq!(
+        probe(&pd(&buf, Some("wbmp"))),
+        PROBE_SCORE_EXACT + PROBE_SCORE_EXTENSION
+    );
 }
 
 #[test]
 fn probe_rejects_obvious_non_wbmp_buffer() {
-    // A buffer that fails the header parse (e.g. an actual JPEG SOI
-    // followed by garbage) must score zero. JPEG magic = FF D8.
-    let data = oxideav_core::ProbeData {
-        buf: &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46],
-        ext: None,
-    };
-    assert_eq!(probe(&data), 0);
+    // JPEG SOI followed by garbage.
+    let buf = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
+    assert_eq!(probe(&pd(&buf, None)), 0);
 }
 
 #[test]
 fn probe_rejects_buffer_shorter_than_minimum() {
-    // 4 bytes — looks like a valid 1×1 header but no body byte. The
-    // probe demands at least 5 bytes (the smallest plausible Type-0
-    // file) before declaring a content-sniff win.
-    let data = oxideav_core::ProbeData {
-        buf: &[0x00, 0x00, 0x01, 0x01],
-        ext: None,
-    };
-    assert_eq!(probe(&data), 0);
+    // A valid 1×1 header but no body byte.
+    assert_eq!(probe(&pd(&[0x00, 0x00, 0x01, 0x01], None)), 0);
+    assert_eq!(probe(&pd(&[0x00, 0x00, 0x01, 0x01], Some("wbmp"))), 0);
 }
 
 #[test]
-fn probe_rejects_header_without_a_full_first_row() {
-    // A header declaring a 64-pixel-wide row (stride 8) but a buffer that
-    // holds only a few body bytes after the header. The §4.1-motivated
-    // content sniff requires the first full pixel row to be present, so a
-    // truncated-after-header buffer scores zero rather than a false win.
-    let mut buf = Vec::new();
-    {
-        use oxideav_wbmp::write_header;
-        write_header(64, 4, &mut buf); // stride = 8
-    }
-    // Only 3 body bytes — fewer than the 8 a full first row needs.
-    buf.extend_from_slice(&[0x00, 0x00, 0x00]);
-    let data = oxideav_core::ProbeData {
-        buf: &buf,
-        ext: None,
-    };
-    assert_eq!(probe(&data), 0);
+fn probe_truncated_preview_needs_the_extension_hint() {
+    // 64×4 (stride 8, 32 body bytes) but only the first row present —
+    // what a probe window shorter than the file looks like. The length
+    // cannot be verified, so content alone scores 0; the hint lifts it.
+    let mut buf = wbmp_file(64, 4, &[]);
+    buf.extend_from_slice(&[0xFF; 8]);
+    assert_eq!(probe(&pd(&buf, None)), 0);
+    assert_eq!(probe(&pd(&buf, Some("wbmp"))), PROBE_SCORE_EXTENSION);
+    // Fewer bytes than one row: nothing.
+    buf.truncate(buf.len() - 5);
+    assert_eq!(probe(&pd(&buf, Some("wbmp"))), 0);
 }
 
 #[test]
-fn probe_accepts_header_with_exactly_one_row_present() {
-    // Same 64×4 header, but now the buffer carries a full first row (8
-    // bytes). The probe only requires the first row in the truncated
-    // preview, so this is a content-sniff win even though the full 4-row
-    // image isn't present.
-    let mut buf = Vec::new();
-    {
-        use oxideav_wbmp::write_header;
-        write_header(64, 4, &mut buf);
-    }
-    buf.extend_from_slice(&[0xFF; 8]); // exactly one row
-    let data = oxideav_core::ProbeData {
-        buf: &buf,
-        ext: None,
-    };
-    assert_eq!(probe(&data), PROBE_SCORE_EXTENSION / 2);
+fn probe_rejects_trailing_slack_and_extra_frames() {
+    let mut buf = wbmp_file(8, 2, &[0x01, 0x02]);
+    assert_eq!(probe(&pd(&buf, None)), PROBE_SCORE_EXACT);
+    buf.push(0x00); // 1 stray byte: not k whole images
+    assert_eq!(probe(&pd(&buf, None)), 0);
+    assert_eq!(probe(&pd(&buf, Some("wbmp"))), 0);
 }
 
 #[test]
 fn probe_rejects_absurd_oversize_dimensions() {
-    // A header whose width MBI decodes to a value far above the default
-    // WbmpLimits max (16384). Even though the bytes "parse", such a
-    // header is noise, not a tiny real bitmap, so the content sniff
-    // declines it. Width = 100000 (3-byte MBI), height = 1.
-    let mut buf = vec![0x00u8, 0x00]; // Type 0, FixedHeader 0
-    {
-        use oxideav_wbmp::write_mbi_u32;
-        write_mbi_u32(100_000, &mut buf);
-        write_mbi_u32(1, &mut buf);
+    // Width = 100000 (3-byte MBI), height = 1: noise, hint or not.
+    let mut buf = vec![0x00u8, 0x00];
+    oxideav_wbmp::write_mbi_u32(100_000, &mut buf);
+    oxideav_wbmp::write_mbi_u32(1, &mut buf);
+    buf.extend_from_slice(&[0x00; 12_500]);
+    assert_eq!(probe(&pd(&buf, None)), 0);
+    assert_eq!(probe(&pd(&buf, Some("wbmp"))), 0);
+}
+
+#[test]
+fn probe_rejects_mpeg_program_stream_pack_header() {
+    // `00 00 01 BA` + a pack header: parses as a 1×7457 Type-0 header,
+    // which the old header-only probe scored. Neither the length nor
+    // the padding bits are consistent with a bitmap.
+    let mut buf = vec![
+        0x00, 0x00, 0x01, 0xBA, 0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x01, 0x89, 0xC3, 0xF8,
+    ];
+    buf.extend_from_slice(&[0x00, 0x00, 0x01, 0xBB, 0x00, 0x12]);
+    buf.resize(256 * 1024, 0xA5);
+    assert_eq!(probe(&pd(&buf, None)), 0);
+    assert_eq!(probe(&pd(&buf, Some("mpg"))), 0);
+}
+
+#[test]
+fn probe_is_zero_on_random_buffers() {
+    // Fixed-seed xorshift; 4 KiB buffers, some forced to start `00 00`
+    // so the header walk is actually exercised.
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    for i in 0..2000 {
+        let mut buf: Vec<u8> = (0..4096).map(|_| next() as u8).collect();
+        if i % 2 == 0 {
+            buf[0] = 0;
+            buf[1] = 0;
+        }
+        assert_eq!(probe(&pd(&buf, None)), 0, "random buffer #{i}");
     }
-    buf.extend_from_slice(&[0xAA; 16]); // some body bytes
-    let data = oxideav_core::ProbeData {
-        buf: &buf,
-        ext: None,
-    };
-    assert_eq!(probe(&data), 0);
-    // The extension hint still forces a win regardless of dimensions —
-    // the tightening only affects the content-sniff path.
-    let data_ext = oxideav_core::ProbeData {
-        buf: &buf,
-        ext: Some("wbmp"),
-    };
-    assert_eq!(probe(&data_ext), PROBE_SCORE_EXTENSION);
 }
 
 // ---------------------------------------------------------------------------

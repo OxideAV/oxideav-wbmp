@@ -10,6 +10,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - edition 2024, MSRV 1.95
 
+### Fixed
+
+- content probe no longer claims non-WBMP streams (an MPEG program
+  stream's `00 00 01 BA` pack header parsed as a 1×7457 header and
+  scored 12): `probe` now requires the strict Type-0 header
+  (`FixHeaderField` 0, no extension headers, shortest-form dimensions),
+  zero row padding bits and a buffer of exactly 1..=16 whole images; the
+  registry probe scores an exact file 50 (75 with `.wbmp`), a
+  probe-window-truncated one 25 only with the `.wbmp` hint, else 0
+
 ## [0.0.4](https://github.com/OxideAV/oxideav-wbmp/compare/v0.0.3...v0.0.4) - 2026-10-04
 
 ### Other

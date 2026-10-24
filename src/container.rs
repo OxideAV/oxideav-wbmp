@@ -19,6 +19,7 @@ use oxideav_core::{
     WriteSeek,
 };
 
+use crate::api::Sniff;
 use crate::header::parse_header_ext_inner;
 
 /// Register the demuxer, muxer, `.wbmp` extension hint and content
@@ -30,34 +31,35 @@ pub fn register(reg: &mut ContainerRegistry) {
     reg.register_probe("wbmp", probe);
 }
 
-/// WBMP has no magic number — Type 0 starts with a literal `0x00`
-/// byte, which is far too common to claim a high-confidence content
-/// probe. We therefore lean on the file extension when present and
-/// only return a low score for content that *parses* as a valid Type-0
-/// header. This avoids stealing probe wins from other formats whose
-/// payload happens to start with a few null bytes.
+/// Content score for a buffer that is exactly a whole WBMP file
+/// ([`crate::probe`]); the `.wbmp` extension lifts it to `75`.
+pub const PROBE_SCORE_EXACT: ProbeScore = 50;
+
+/// WBMP has no magic number — a Type-0 file starts `00 00` followed by
+/// two MBI dimensions, a prefix that countless other byte streams share
+/// (an MPEG program-stream pack header `00 00 01 BA` parses as a 1×7457
+/// Type-0 header). The probe therefore demands the strict WAP-237
+/// §4.5.1 Type-0 header (no extension headers, reserved bits zero,
+/// shortest-form non-zero dimensions at most
+/// [`crate::PROBE_MAX_DIMENSION`]), zero padding bits in every row
+/// present, and:
 ///
-/// The §4.1 precedence rule ("the actual data format has precedence over
-/// the media type indicated in the `Content-Type` header") motivates a
-/// content sniff that is more than a four-byte header parse: a buffer
-/// that *parses* as a 1×1 header but is followed by megabytes of
-/// unrelated data is almost certainly not a WBMP. The content path is
-/// the standalone [`crate::probe`]: the declared dimensions must be at
-/// most [`crate::PROBE_MAX_DIMENSION`] (a header claiming a
-/// 4-billion-pixel row is noise, not a tiny real image) and the buffer
-/// must hold at least the first full pixel row — a coincidental
-/// null-byte run essentially never satisfies that, while a genuine WBMP
-/// always does. Probe buffers are truncated previews, so only the
-/// *first* row is required, not the whole image.
+/// * a buffer that is **exactly** the header plus `1..=16` whole images
+///   (main + 0..15 animated, §4.2): [`PROBE_SCORE_EXACT`], or `75` with
+///   the `.wbmp` extension hint;
+/// * a buffer that ends inside the image data (the input is larger than
+///   the probe window): [`PROBE_SCORE_EXTENSION`] only when the hint is
+///   `.wbmp` — the length cannot be checked, so content alone never
+///   claims such a buffer;
+/// * anything else: `0`, extension hint or not (the registry's own
+///   extension fallback still applies when no probe scores).
 pub fn probe(data: &ProbeData) -> ProbeScore {
-    if matches!(data.ext, Some("wbmp")) {
-        return PROBE_SCORE_EXTENSION;
-    }
-    if crate::probe(data.buf) {
-        // Half of PROBE_SCORE_EXTENSION (intentionally conservative).
-        PROBE_SCORE_EXTENSION / 2
-    } else {
-        0
+    let ext = matches!(data.ext, Some("wbmp"));
+    match crate::api::sniff(data.buf) {
+        Some(Sniff::Exact) if ext => PROBE_SCORE_EXACT + PROBE_SCORE_EXTENSION,
+        Some(Sniff::Exact) => PROBE_SCORE_EXACT,
+        Some(Sniff::Truncated) if ext => PROBE_SCORE_EXTENSION,
+        _ => 0,
     }
 }
 
