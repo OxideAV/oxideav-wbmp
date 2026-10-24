@@ -6,6 +6,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/OxideAV/oxideav-wbmp/compare/v0.0.4...v0.0.5) - 2026-10-24
+
+### Other
+
+- strict Type-0 header + exact payload length (no more MPEG-PS false positives)
+- edition 2024, MSRV 1.95
+
 ### Changed
 
 - edition 2024, MSRV 1.95
